@@ -154,7 +154,7 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-a';
+const APP_VER='2026-08-29-b';
 const STORE_KEY='okane_v1';
 const DEF_CATS=['食費','日用品','交通','趣味・娯楽','サブスク・固定費','その他'];
 let S=null, curTab='s-home', chatHist=[];
@@ -199,8 +199,7 @@ function period(base){
 function inPeriod(dateStr,p){const d=new Date(dateStr+'T12:00');return d>=p.s&&d<p.e;}
 function perLbl(p){
   const endDisp=new Date(p.e-86400000);
-  const name=(p.e.getMonth()===0?12:p.e.getMonth())+ '月期';
-  return name+' '+(p.s.getMonth()+1)+'/'+p.s.getDate()+'–'+(endDisp.getMonth()+1)+'/'+endDisp.getDate();
+  return (endDisp.getMonth()+1)+'月期 '+(p.s.getMonth()+1)+'/'+p.s.getDate()+'–'+(endDisp.getMonth()+1)+'/'+endDisp.getDate();
 }
 
 /* ---------- GAS API ---------- */
