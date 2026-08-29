@@ -158,7 +158,7 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-j';
+const APP_VER='2026-08-29-k';
 const STORE_KEY='okane_v1';
 const DEF_CATS=['食費','日用品','交通','服・美容','趣味・娯楽','サブスク・固定費','その他'];
 let S=null, curTab='s-home', chatHist=[], perOff=0, cardFilter='', catFilter='', keihiFilter=false;
@@ -414,9 +414,10 @@ function renderTx(){
        '<button class="btn sm cf'+(cardFilter===c?' pri':'')+'" data-c="'+esc(c)+'" style="white-space:nowrap;flex-shrink:0">'+(c?esc(c):'すべて')+'</button>').join('')
      +'</div>';
   }
-  h+='<div style="display:flex;align-items:center;padding:8px 6px 0">'
+  h+='<div style="display:flex;align-items:center;gap:8px;padding:8px 6px 0">'
     +'<span class="num" style="font-size:12.5px;color:var(--sec)">'+sorted.length+'件 ・ '+fmt(sum)+'</span>'
-    +'<button class="btn sm" id="selToggle" style="margin-left:auto">'+(selMode?'キャンセル':'選択')+'</button></div>';
+    +(cardFilter?'<button class="btn sm" id="renameCard" style="margin-left:auto">名前を変更</button>':'')
+    +'<button class="btn sm" id="selToggle" style="'+(cardFilter?'':'margin-left:auto')+'">'+(selMode?'キャンセル':'選択')+'</button></div>';
   if(!sorted.length){h+='<div class="empty">この期間・この絞り込みの明細はない。</div>';el.innerHTML=h;
     document.querySelectorAll('.cf').forEach(b=>b.onclick=()=>{cardFilter=b.dataset.c;renderTx();});
     if($('#clrFil'))$('#clrFil').onclick=()=>{catFilter='';keihiFilter=false;renderTx();};
@@ -445,6 +446,18 @@ function renderTx(){
   el.innerHTML=h;
   document.querySelectorAll('.cf').forEach(b=>b.onclick=()=>{cardFilter=b.dataset.c;selMode=false;selIds.clear();renderTx();});
   if($('#clrFil'))$('#clrFil').onclick=()=>{catFilter='';keihiFilter=false;renderTx();};
+  if($('#renameCard'))$('#renameCard').onclick=()=>{
+    const old=cardFilter;
+    sheet('<h3>カード・口座名を変更</h3><div class="footnote">「'+esc(old)+'」の '+sorted.length+' 件をまとめて変更する</div>'
+     +'<div class="frow" style="margin-top:12px"><input id="rnNew" value="'+esc(old==='（手入力）'?'':old)+'" placeholder="新しい名前"></div>'
+     +'<button class="btn pri" id="rnGo">変更する</button>');
+    $('#rnGo').onclick=()=>{
+      const nv=$('#rnNew').value.trim(); if(!nv){toast('名前を入れて');return;}
+      let n=0;
+      S.tx.forEach(t=>{ if((t.card||'（手入力）')===old){t.card=nv;t.serverWins=false;pushTx([t]);n++;} });
+      save(); cardFilter=nv; closeSheet(); renderTx(); toast(n+'件のカード名を変更した');
+    };
+  };
   $('#selToggle').onclick=()=>{selMode=!selMode;selIds.clear();renderTx();};
   if(selMode){
     document.querySelectorAll('[data-sel]').forEach(r=>r.onclick=e=>{
@@ -613,12 +626,17 @@ function renderSet(){
    +'<div class="footnote num" style="padding-top:14px">お金 '+APP_VER+'</div>';
   $('#st_test').onclick=async()=>{S.set.gasUrl=$('#st_gas').value.trim();S.set.pass=$('#st_pass').value.trim();save();
     try{const j=await api('ping',{});toast(j.ok?'接続OK':'応答が変');syncPull(true);}catch(e){toast('接続失敗: '+e.message);}};
-  $('#st_scan').onclick=async()=>{
+  $('#st_scan').onclick=()=>{
     if(!S.set.gasUrl){toast('先に接続して');return;}
-    $('#st_scan').textContent='取込中…';
-    try{const j=await api('scan',{}); await syncPull(); toast((j.found||0)+'件 取り込んだ');}
-    catch(e){toast('エラー: '+e.message);}
-    $('#st_scan').textContent='メールを今すぐ取込';
+    sheet('<h3>メールを取り込む</h3><div class="footnote">どこまで遡って取り込む？（重複は自動で除外）</div>'
+     +'<div style="height:12px"></div>'
+     +[3,7,30,90].map(d=>'<button class="btn scanD" data-d="'+d+'" style="margin-bottom:8px">'+(d>=30?(d/30)+'ヶ月分':d+'日分')+'</button>').join(''));
+    document.querySelectorAll('.scanD').forEach(b=>b.onclick=async()=>{
+      b.textContent='取込中…（最大1分）';
+      try{const j=await api('scan',{days:+b.dataset.d}); await syncPull(); closeSheet(); renderAll();
+        toast((j.found||0)+'件 取り込んだ');}
+      catch(e){toast('エラー: '+e.message);b.textContent='もう一度';}
+    });
   };
   $('#st_diag').onclick=async()=>{
     if(!S.set.gasUrl){toast('先に接続して');return;}
@@ -722,6 +740,17 @@ function parseCsvText(text){
 }
 const isDateCell=v=>/^\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}/.test((v||'').trim());
 const numCell=v=>{const n=parseInt(String(v||'').replace(/[^0-9]/g,''),10);return isNaN(n)?0:n;};
+function guessCardName(rows,det,fname){
+  const f=(fname||'').toLowerCase();
+  const head=(det.head||[]).join(',');
+  const sample=(det.data&&det.data[0]?det.data[0].join(','):'');
+  if(/enavi|rakuten/.test(f))return '楽天カード';
+  if(/vpass|smbc|meisai/.test(f))return '三井住友';
+  if(/利用店名|利用日/.test(head))return '楽天カード';
+  if(det.noHead)return '三井住友';
+  if(/摘要|預かり金額|差引残高|支払い金額/.test(head))return '銀行';
+  return '';
+}
 function detectCsv(rows){
   // 1) ヘッダー行を探す
   let hi=-1;
@@ -747,7 +776,7 @@ function detectCsv(rows){
   while(head.length<s.length)head.push('列'+(head.length+1));
   return {head,data,map:{date:0,amt:amt<0?2:amt,desc:1,desc2:-1},name:'カード明細（ヘッダー無し）',noHead:true};
 }
-let _csvItems=null;
+let _csvItems=null, _csvCard='';
 $('#csvFile').addEventListener('change',async e=>{
   const f=e.target.files[0]; if(!f)return; e.target.value='';
   const buf=await f.arrayBuffer();
@@ -757,6 +786,7 @@ $('#csvFile').addEventListener('change',async e=>{
   if(rows.length<2){toast('行が読めない');return;}
   const det=detectCsv(rows);
   if(!det){toast('日付の列が見つからない');return;}
+  _csvCard=guessCardName(rows,det,f.name);
   const sample=det.data[0]||[];
   const opt=(sel)=>det.head.map((h,i)=>'<option value="'+i+'" '+(sel===i?'selected':'')+'>'+esc(h||('列'+(i+1)))+' … '+esc(String(sample[i]||'').slice(0,14))+'</option>').join('');
   sheet('<h3>CSV取込 1/2 — 列の対応</h3>'
@@ -793,8 +823,8 @@ function csvPreview(){
   const items=_csvItems;
   const cardNames=[...new Set(S.tx.map(t=>t.card).filter(Boolean))];
   let h='<h3>CSV取込 2/2 — 中身の確認（'+items.length+'行）</h3>'
-   +'<div class="frow"><label>このCSVは何のカード／口座？（明細で絞り込めるようになる）</label>'
-   +'<input id="cvCard" list="cvCardList" placeholder="例: 楽天(私用) / 楽天(仕事) / 三井住友 / 銀行" value="'+esc(cardNames[0]||'')+'">'
+   +'<div class="frow"><label>このCSVは何のカード／口座？'+(_csvCard?'（ファイルから自動判定）':'')+'</label>'
+   +'<input id="cvCard" list="cvCardList" placeholder="例: 楽天(私用) / 楽天(仕事) / 三井住友 / 銀行" value="'+esc(_csvCard)+'">'
    +'<datalist id="cvCardList">'+cardNames.map(c=>'<option value="'+esc(c)+'">').join('')+'</datalist></div>'
    +'<div class="frow"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="cvKeihi" style="width:auto">全部「経費」として取り込む（仕事用カードのCSV向け）</label></div>'
    +(S.set.gasUrl?'<button class="btn sm" id="cvAI" style="margin-bottom:10px">AIで分類し直す</button>':'')
