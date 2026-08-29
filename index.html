@@ -158,10 +158,10 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-h';
+const APP_VER='2026-08-29-i';
 const STORE_KEY='okane_v1';
 const DEF_CATS=['食費','日用品','交通','服・美容','趣味・娯楽','サブスク・固定費','その他'];
-let S=null, curTab='s-home', chatHist=[], perOff=0, cardFilter='';
+let S=null, curTab='s-home', chatHist=[], perOff=0, cardFilter='', catFilter='', keihiFilter=false;
 
 /* ---------- storage (versioned) ---------- */
 function defState(){return {sver:1, tx:[], cats:[...DEF_CATS],
@@ -306,8 +306,8 @@ function renderHome(){
   h+='<div class="sect">カテゴリ残</div><div class="group">';
   S.cats.forEach(c=>{const bud=+S.budget.per[c]||0;const sp=st.perCat[c]||0;
     const rest=bud?bud-sp:null; const pct=bud?Math.min(100,Math.round(sp/bud*100)):0;
-    h+='<div class="row44 cat num"><span class="nm">'+esc(c)+'</span><span class="bar"><i class="'+(bud&&sp>bud?'over':'')+'" style="width:'+(bud?pct:0)+'%"></i></span>'
-     +'<span class="rest '+(rest!==null&&rest<0?'over':'')+'">'+(bud?fmt(rest):fmt(sp))+'</span></div>';});
+    h+='<div class="row44 cat num goCat" data-cat="'+esc(c)+'"><span class="nm">'+esc(c)+'</span><span class="bar"><i class="'+(bud&&sp>bud?'over':'')+'" style="width:'+(bud?pct:0)+'%"></i></span>'
+     +'<span class="rest '+(rest!==null&&rest<0?'over':'')+'">'+(bud?fmt(rest):fmt(sp))+'</span><span class="chev">›</span></div>';});
   h+='</div>';
   // 支払い予報（台帳から30日先まで）
   const fc=upcomingFixed(30);
@@ -318,7 +318,7 @@ function renderHome(){
       +'<span style="font-size:14px;font-weight:600;'+(f.paid?'color:var(--green)':'')+'">'+(f.paid?'✓ ':'')+fmt(f.amount)+'</span></div>';});
     h+='</div>';
   }
-  if(st.keihiCnt){h+='<div class="sect"></div><div class="group"><div class="row44 num" onclick="showKeihi()"><span class="isq" style="background:rgba(10,132,255,.16);color:var(--blue)">経</span><span style="flex:1">経費（別枠・今月）</span><span style="font-weight:600">'+fmt(st.keihiSum)+'</span><span class="chev">'+st.keihiCnt+'件 ›</span></div></div>';}
+  if(st.keihiCnt){h+='<div class="sect"></div><div class="group"><div class="row44 num goKeihi"><span class="isq" style="background:rgba(10,132,255,.16);color:var(--blue)">経</span><span style="flex:1">経費（別枠・今月）</span><span style="font-weight:600">'+fmt(st.keihiSum)+'</span><span class="chev">'+st.keihiCnt+'件 ›</span></div></div>';}
   el.innerHTML=h;
 }
 function upcomingFixed(days){
@@ -346,10 +346,16 @@ function renderTx(){
   const cards=[...new Set(S.tx.map(t=>t.card).filter(Boolean))];
   let list=S.tx.filter(t=>inPeriod(t.date,p));
   if(cardFilter)list=list.filter(t=>(t.card||'（手入力）')===cardFilter);
+  if(catFilter)list=list.filter(t=>!t.keihi&&!t.skip&&(t.cat||'その他')===catFilter);
+  if(keihiFilter)list=list.filter(t=>t.keihi);
   if(!S.tx.length){el.innerHTML='<div class="empty">明細はまだない。<br>入力バー・📷レシート・設定のCSV取込から。</div>';selMode=false;return;}
   const sorted=[...list].sort((a,b)=> (b.date+(b.time||''))<(a.date+(a.time||''))?-1:1);
   const sum=sorted.filter(t=>!t.skip).reduce((a,t)=>a+(+t.amount||0),0);
   let h='';
+  if(catFilter||keihiFilter){
+    h+='<div style="padding:10px 4px 0"><button class="btn sm pri" id="clrFil">'
+      +(keihiFilter?'経費':esc(catFilter))+' で絞り込み中 ✕</button></div>';
+  }
   if(cards.length>1||cardFilter){
     h+='<div style="display:flex;gap:6px;overflow-x:auto;padding:10px 2px 2px;-webkit-overflow-scrolling:touch">'
      +['',...cards,'（手入力）'].filter((v,i,a)=>a.indexOf(v)===i).map(c=>
@@ -361,6 +367,7 @@ function renderTx(){
     +'<button class="btn sm" id="selToggle" style="margin-left:auto">'+(selMode?'キャンセル':'選択')+'</button></div>';
   if(!sorted.length){h+='<div class="empty">この期間・この絞り込みの明細はない。</div>';el.innerHTML=h;
     document.querySelectorAll('.cf').forEach(b=>b.onclick=()=>{cardFilter=b.dataset.c;renderTx();});
+    if($('#clrFil'))$('#clrFil').onclick=()=>{catFilter='';keihiFilter=false;renderTx();};
     $('#selToggle').onclick=()=>{selMode=!selMode;selIds.clear();renderTx();};return;}
   let lastD='';
   sorted.forEach(t=>{
@@ -385,6 +392,7 @@ function renderTx(){
   }
   el.innerHTML=h;
   document.querySelectorAll('.cf').forEach(b=>b.onclick=()=>{cardFilter=b.dataset.c;selMode=false;selIds.clear();renderTx();});
+  if($('#clrFil'))$('#clrFil').onclick=()=>{catFilter='';keihiFilter=false;renderTx();};
   $('#selToggle').onclick=()=>{selMode=!selMode;selIds.clear();renderTx();};
   if(selMode){
     document.querySelectorAll('[data-sel]').forEach(r=>r.onclick=e=>{
@@ -414,7 +422,10 @@ function renderTx(){
     };
   }
 }
-function showKeihi(){go('s-tx');}
+window.openCat=c=>{catFilter=c;keihiFilter=false;cardFilter='';selMode=false;selIds.clear();go('s-tx');};
+window.openCard=c=>{cardFilter=c;catFilter='';keihiFilter=false;selMode=false;selIds.clear();go('s-tx');};
+window.openKeihi=()=>{catFilter='';keihiFilter=true;cardFilter='';selMode=false;selIds.clear();go('s-tx');};
+function showKeihi(){openKeihi();}
 
 /* ---------- edit sheet ---------- */
 function sheet(html){ $('#sheetBody').innerHTML=html; $('#sheetWrap').classList.add('on'); }
@@ -473,7 +484,7 @@ function renderRep(){
   h+='<div class="sect">カテゴリ別（前期比）</div><div class="group">';
   S.cats.forEach(c=>{const v=st.perCat[c]||0,pv=prev.perCat[c]||0; if(!v&&!pv)return;
     const d=v-pv; const pct=pv?Math.round(d/pv*100):null;
-    h+='<div class="row44 num"><span style="flex:1">'+esc(c)+'</span>'
+    h+='<div class="row44 num goCat" data-cat="'+esc(c)+'"><span style="flex:1">'+esc(c)+'</span>'
      +'<span style="font-size:12px;color:'+(d>0?'var(--red)':(d<0?'var(--green)':'var(--sec)'))+';margin-right:10px">'
      +(pv?((d>0?'+':'')+(pct!==null?pct+'%':'')):'新規')+'</span>'
      +'<span style="font-weight:600">'+fmt(v)+'</span></div>';});
@@ -484,7 +495,7 @@ function renderRep(){
   const byCard={}; S.tx.filter(t=>inPeriod(t.date,st.p)&&!t.skip).forEach(t=>{byCard[t.card||'（手入力）']=(byCard[t.card||'（手入力）']||0)+(+t.amount);});
   const cs=Object.entries(byCard).sort((a,b)=>b[1]-a[1]);
   if(cs.length>1){h+='<div class="sect">カード・口座別</div><div class="group">';
-    cs.forEach(([c,v])=>{h+='<div class="row44 num"><span style="flex:1">'+esc(c)+'</span><span style="font-weight:600">'+fmt(v)+'</span></div>';});
+    cs.forEach(([c,v])=>{h+='<div class="row44 num goCard" data-card="'+esc(c)+'"><span style="flex:1">'+esc(c)+'</span><span style="font-weight:600">'+fmt(v)+'</span><span class="chev">›</span></div>';});
     h+='</div>';}
   h+='<div class="sect"></div><div style="padding:0 4px"><button class="btn" id="btnRev">AIにこの期のレビューを書かせる</button></div>';
   el.innerHTML=h;
@@ -835,7 +846,7 @@ $('#photoFile').addEventListener('change',async e=>{
 });
 
 /* ---------- nav ---------- */
-function go(s){curTab=s;
+function go(s){ if(s!=='s-tx'){catFilter='';keihiFilter=false;} curTab=s;
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
   document.querySelectorAll('.screen').forEach(x=>x.classList.toggle('on',x.id===s));
   $('#ibar').classList.toggle('hidden',!(s==='s-home'||s==='s-tx'||s==='s-chat'));
@@ -843,6 +854,11 @@ function go(s){curTab=s;
   scrollTo(0,0);
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>go(b.dataset.s));
+document.addEventListener('click',e=>{
+  const c=e.target.closest('.goCat'); if(c){openCat(c.dataset.cat);return;}
+  const k=e.target.closest('.goKeihi'); if(k){openKeihi();return;}
+  const d=e.target.closest('.goCard'); if(d){openCard(d.dataset.card);return;}
+});
 function renderAll(){
   $('#perTxt').textContent=perLbl(period())+(perOff?'':' ・ 今月');
   $('#perNext').style.opacity=perOff>=0?'.3':'1';
