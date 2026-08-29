@@ -158,14 +158,14 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-i';
+const APP_VER='2026-08-29-j';
 const STORE_KEY='okane_v1';
 const DEF_CATS=['食費','日用品','交通','服・美容','趣味・娯楽','サブスク・固定費','その他'];
 let S=null, curTab='s-home', chatHist=[], perOff=0, cardFilter='', catFilter='', keihiFilter=false;
 
 /* ---------- storage (versioned) ---------- */
 function defState(){return {sver:1, tx:[], cats:[...DEF_CATS],
-  budget:{total:0, per:{}}, goal:{save:0, note:''}, fixed:[], rules:{}, krules:{},
+  budget:{total:0, per:{}}, goal:{save:0, note:''}, fixed:[], rules:{}, krules:{}, debts:[], repays:[],
   set:{gasUrl:'', pass:'', startDay:25},
   aiNote:'', lastSync:0};}
 function load(){
@@ -180,6 +180,8 @@ function load(){
     if(!S.fixed)S.fixed=[];
     if(!S.rules)S.rules={};
     if(!S.krules)S.krules={};
+    if(!S.debts)S.debts=[];
+    if(!S.repays)S.repays=[];
   }catch(e){S=defState();}
 }
 function save(){try{localStorage.setItem(STORE_KEY,JSON.stringify(S));}catch(e){}}
@@ -244,6 +246,43 @@ function addTx(t,opts){
 }
 function updateTx(id,patch){const i=S.tx.findIndex(x=>x.id===id); if(i<0)return; Object.assign(S.tx[i],patch); S.tx[i].serverWins=false; save(); pushTx([S.tx[i]]); renderAll();}
 
+/* ---------- 借金・返済 ---------- */
+function debtBal(d){
+  const paid=(S.repays||[]).filter(r=>r.debtId===d.id).reduce((a,r)=>a+(+r.amount||0),0);
+  return Math.max(0,(+d.total||0)-paid);
+}
+function debtStats(){
+  const list=(S.debts||[]).map(d=>{
+    const bal=debtBal(d);
+    const paid=(+d.total||0)-bal;
+    const m=+d.monthly||0, rate=(+d.rate||0)/100/12;
+    let months=null, interest=0, sim=bal;
+    if(m>0&&bal>0){
+      months=0;
+      const minPay=sim*rate;
+      if(m<=minPay+1){ months=Infinity; }
+      else{
+        while(sim>0&&months<600){ const i=sim*rate; interest+=i; sim=sim+i-m; months++; }
+      }
+    }
+    const end=(months!==null&&isFinite(months))?new Date(new Date().getFullYear(),new Date().getMonth()+months,1):null;
+    return {...d,bal,paid,months,interest:Math.round(interest),end,pct:d.total?Math.round(paid/d.total*100):0};
+  });
+  const totalBal=list.reduce((a,d)=>a+d.bal,0);
+  const totalOrig=list.reduce((a,d)=>a+(+d.total||0),0);
+  const monthly=list.reduce((a,d)=>a+(d.bal>0?(+d.monthly||0):0),0);
+  const finite=list.filter(d=>d.bal>0&&d.months!==null&&isFinite(d.months));
+  const lastEnd=finite.length?finite.reduce((a,d)=>d.end>a?d.end:a,finite[0].end):null;
+  const p=period();
+  const thisPeriodRepay=(S.repays||[]).filter(r=>inPeriod(r.date,p)).reduce((a,r)=>a+(+r.amount||0),0);
+  return {list,totalBal,totalOrig,monthly,lastEnd,thisPeriodRepay,
+    paidPct:totalOrig?Math.round((totalOrig-totalBal)/totalOrig*100):0};
+}
+function addRepay(debtId,amount,date){
+  S.repays.push({id:uid(),debtId,amount:+amount||0,date:date||todayStr()});
+  save();
+}
+
 /* ---------- render: home ---------- */
 const FIXCAT='サブスク・固定費';
 function stats(){
@@ -301,6 +340,19 @@ function renderHome(){
      +'<span class="isq" style="background:rgba(94,92,230,.2);color:var(--indigo)">固</span>'
      +'<span style="flex:1">固定費<br><span style="font-size:11px;color:var(--sec)">見込み '+fmt(st.fixedPlan)+' ・ 支払済 '+fmt(st.spentFix)+'</span></span>'
      +'<span class="bar" style="max-width:90px"><i style="width:'+Math.min(100,st.fixedPlan?Math.round(st.spentFix/st.fixedPlan*100):0)+'%;background:var(--indigo)"></i></span><span class="chev">›</span></div></div>';
+  }
+  const ds=debtStats();
+  if(ds.list.length){
+    h+='<div class="sect">借金・返済</div><div class="group">';
+    h+='<div class="row44 num goDebt"><span class="isq" style="background:rgba(255,69,58,.18);color:var(--red)">残</span>'
+     +'<span style="flex:1">残債<br><span style="font-size:11px;color:var(--sec)">'
+     +(ds.lastEnd?('完済予定 '+ds.lastEnd.getFullYear()+'/'+(ds.lastEnd.getMonth()+1)):'返済額を入れると完済予定が出る')+'</span></span>'
+     +'<span style="font-weight:700;font-size:17px;color:var(--red)">'+fmt(ds.totalBal)+'</span><span class="chev">›</span></div>';
+    h+='<div class="row44 num"><span class="tag" style="width:76px;font-size:13px">返済の進み</span>'
+     +'<span class="bar"><i style="width:'+ds.paidPct+'%;background:var(--green)"></i></span>'
+     +'<span class="pct" style="width:54px">'+ds.paidPct+'%</span></div>';
+    if(ds.thisPeriodRepay)h+='<div class="row44 num"><span style="flex:1">今期の返済</span><span style="font-weight:600;color:var(--green)">'+fmt(ds.thisPeriodRepay)+'</span></div>';
+    h+='</div>';
   }
   if(S.aiNote){h+='<div class="sect">AIから</div><div class="group"><div class="row44 airow"><span class="ic">✦</span><span class="txt">'+esc(S.aiNote)+'</span></div></div>';}
   h+='<div class="sect">カテゴリ残</div><div class="group">';
@@ -516,7 +568,9 @@ function renderSet(){
   el.innerHTML='<div class="sect">接続</div><div class="group" style="padding:12px 16px">'
    +'<div class="frow"><label>GAS Web App URL</label><input id="st_gas" value="'+esc(S.set.gasUrl)+'" placeholder="https://script.google.com/..."></div>'
    +'<div class="frow"><label>合言葉（GAS側TOKENと同じ文字列）</label><input id="st_pass" value="'+esc(S.set.pass)+'"></div>'
-   +'<button class="btn sm" id="st_test">接続テスト</button></div>'
+   +'<button class="btn sm" id="st_test">接続テスト</button>'
+   +' <button class="btn sm" id="st_scan">メールを今すぐ取込</button>'
+   +' <button class="btn sm" id="st_diag">メール診断</button></div>'
    +'<div class="sect">期間・予算</div><div class="group" style="padding:12px 16px">'
    +'<div class="frow"><label>月の開始日（給料日）</label><input id="st_day" type="number" min="1" max="28" value="'+(S.set.startDay||25)+'"></div>'
    +'<div class="frow"><label>月の総予算（円）</label><input id="st_total" type="number" value="'+(S.budget.total||'')+'"></div>'
@@ -540,6 +594,7 @@ function renderSet(){
    +'<button class="btn sm" id="st_saveC">保存</button></div>'
    +'<div class="sect">取込</div><div class="group" style="padding:12px 16px">'
    +'<button class="btn" id="st_csv">銀行CSVを取り込む</button></div>'
+   +'<div class="sect">借金・返済</div><div class="group"><div class="row44 goDebt"><span class="isq" style="background:rgba(255,69,58,.18);color:var(--red)">残</span><span style="flex:1">借金の登録・返済の記録</span><span class="chev">›</span></div></div>'
    +'<div class="sect">分類の学習（'+Object.keys(S.rules).length+'件）</div><div class="group" style="padding:12px 16px">'
    +'<div class="footnote" style="padding:0 0 8px">明細のカテゴリを直すと、その店を覚えて次から自動でそのカテゴリになる。</div>'
    +(Object.keys(S.rules).length?'<div style="max-height:34vh;overflow-y:auto">'+Object.entries(S.rules).map(([k,v])=>
@@ -558,6 +613,37 @@ function renderSet(){
    +'<div class="footnote num" style="padding-top:14px">お金 '+APP_VER+'</div>';
   $('#st_test').onclick=async()=>{S.set.gasUrl=$('#st_gas').value.trim();S.set.pass=$('#st_pass').value.trim();save();
     try{const j=await api('ping',{});toast(j.ok?'接続OK':'応答が変');syncPull(true);}catch(e){toast('接続失敗: '+e.message);}};
+  $('#st_scan').onclick=async()=>{
+    if(!S.set.gasUrl){toast('先に接続して');return;}
+    $('#st_scan').textContent='取込中…';
+    try{const j=await api('scan',{}); await syncPull(); toast((j.found||0)+'件 取り込んだ');}
+    catch(e){toast('エラー: '+e.message);}
+    $('#st_scan').textContent='メールを今すぐ取込';
+  };
+  $('#st_diag').onclick=async()=>{
+    if(!S.set.gasUrl){toast('先に接続して');return;}
+    $('#st_diag').textContent='調べてる…';
+    try{
+      const j=await api('diag',{});
+      let h='<h3>メール診断</h3><div class="footnote">Gmailに通知メールが届いているかの確認</div>';
+      h+='<div class="group" style="margin:10px 0;padding:10px 14px">';
+      (j.queries||[]).forEach(q=>{h+='<div style="display:flex;gap:8px;padding:5px 0;font-size:13px"><span style="flex:1">'+esc(q.label)+'</span><span class="num" style="font-weight:700;color:'+(q.count?'var(--green)':'var(--red)')+'">'+q.count+'件</span></div>';});
+      h+='</div>';
+      if((j.samples||[]).length){
+        h+='<div class="sect" style="padding-left:0">見つかったメールの読み取り結果</div>';
+        j.samples.forEach(s=>{h+='<div class="group" style="margin-bottom:8px;padding:10px 14px;font-size:12px">'
+          +'<div style="color:var(--sec)">'+esc(s.from)+'</div><b>'+esc(s.subject)+'</b>'
+          +'<div style="margin-top:6px;color:var(--sec);white-space:pre-wrap;max-height:80px;overflow:hidden">'+esc(s.body)+'</div>'
+          +'<div style="margin-top:6px;color:'+(s.parsed&&s.parsed.length?'var(--green)':'var(--red)')+'">→ '+esc(JSON.stringify(s.parsed))+'</div></div>';});
+      }
+      if((j.recentSubjects||[]).length){
+        h+='<div class="sect" style="padding-left:0">直近14日で「カード/利用/決済」を含むメール</div><div class="group" style="padding:10px 14px;font-size:11.5px">'
+         +j.recentSubjects.map(x=>'<div style="padding:3px 0;border-bottom:.5px solid var(--sep);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(x)+'</div>').join('')+'</div>';
+      }
+      sheet(h);
+    }catch(e){toast('エラー: '+e.message);}
+    $('#st_diag').textContent='メール診断';
+  };
   $('#st_saveB').onclick=()=>{S.set.startDay=Math.min(28,Math.max(1,+$('#st_day').value||25));
     S.budget.total=+$('#st_total').value||0;
     document.querySelectorAll('.st_per').forEach(i=>{S.budget.per[i.dataset.c]=+i.value||0;});
@@ -753,6 +839,7 @@ function ctxForAI(){
     varBudget:st.varBudget,spentVar:st.spentVar,spentFixed:st.spentFix,
     left:Math.round(st.left),daysLeft:st.daysLeft,
     perCat:st.perCat,perCatBudget:S.budget.per,keihiSum:st.keihiSum,goal:S.goal,
+    debts:(S.debts||[]).map(d=>({name:d.name,残債:debtBal(d),年利:d.rate,毎月:d.monthly})),
     recent:st.personal.slice(-60).map(t=>({d:t.date,a:t.amount,s:t.store,c:t.cat}))};
 }
 function pushBub(cls,txt){const d=document.createElement('div');d.className='bub '+cls;d.textContent=txt;$('#chatLog').appendChild(d);d.scrollIntoView({block:'end'});}
@@ -854,7 +941,65 @@ function go(s){ if(s!=='s-tx'){catFilter='';keihiFilter=false;} curTab=s;
   scrollTo(0,0);
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>go(b.dataset.s));
+window.openDebt=()=>{
+  const ds=debtStats();
+  let h='<h3>借金・返済</h3>';
+  h+='<div class="group" style="margin-bottom:12px"><div class="row44 num"><span style="flex:1">残債合計</span><span style="font-weight:700;color:var(--red)">'+fmt(ds.totalBal)+'</span></div>'
+   +'<div class="row44 num"><span style="flex:1">元の総額</span><span style="color:var(--sec)">'+fmt(ds.totalOrig)+'</span></div>'
+   +'<div class="row44 num"><span style="flex:1">毎月の返済</span><span style="font-weight:600">'+fmt(ds.monthly)+'</span></div>'
+   +(ds.lastEnd?'<div class="row44 num"><span style="flex:1">完済予定</span><span style="font-weight:600;color:var(--green)">'+ds.lastEnd.getFullYear()+'年'+(ds.lastEnd.getMonth()+1)+'月</span></div>':'')
+   +'</div>';
+  ds.list.forEach(d=>{
+    h+='<div class="group" style="margin-bottom:10px;padding:12px 16px">'
+     +'<div style="display:flex;align-items:baseline;gap:8px"><b style="font-size:15px">'+esc(d.name)+'</b>'
+     +'<span class="num" style="margin-left:auto;font-weight:700;color:'+(d.bal?'var(--red)':'var(--green)')+'">'+(d.bal?fmt(d.bal):'完済 ✓')+'</span></div>'
+     +'<div class="row44 num" style="padding:8px 0"><span class="bar"><i style="width:'+d.pct+'%;background:var(--green)"></i></span><span class="pct" style="width:50px">'+d.pct+'%</span></div>'
+     +'<div class="footnote num" style="padding:0">'+fmt(d.paid)+' 返済済 / '+fmt(d.total)+(d.rate?(' ・ 年利'+d.rate+'%'):'')+(d.monthly?(' ・ 毎月'+fmt(d.monthly)):'')+'</div>';
+    if(d.bal>0&&d.monthly){
+      if(!isFinite(d.months))h+='<div class="footnote warn" style="padding:6px 0 0">毎月の返済が利息を下回っていて、このままだと減らない</div>';
+      else h+='<div class="footnote" style="padding:6px 0 0">あと <b style="color:var(--label)">'+d.months+'ヶ月</b>（'+d.end.getFullYear()+'/'+(d.end.getMonth()+1)+'）・ 今後の利息 '+fmt(d.interest)+'</div>';
+    }
+    if(d.bal>0){
+      h+='<div style="display:flex;gap:8px;margin-top:10px"><input class="rpAmt" data-id="'+d.id+'" type="number" placeholder="返済額" style="flex:1">'
+       +'<button class="btn sm rpGo" data-id="'+d.id+'">返済を記録</button></div>';
+    }
+    h+='<div style="height:8px"></div><button class="btn sm dbDel" data-id="'+d.id+'" style="color:var(--red)">この借金を削除</button></div>';
+  });
+  h+='<div class="sect" style="padding-left:0">借金を追加</div><div class="group" style="padding:12px 16px">'
+   +'<div class="frow"><input id="db_name" placeholder="名前（例: カードローン）"></div>'
+   +'<div class="frow"><div class="inline"><input id="db_total" type="number" placeholder="総額（円）" style="flex:1.4">'
+   +'<input id="db_rate" type="number" step="0.1" placeholder="年利%" style="flex:.9">'
+   +'<input id="db_month" type="number" placeholder="毎月返済" style="flex:1.2"></div></div>'
+   +'<div class="frow"><input id="db_paid" type="number" placeholder="すでに返した額（任意）"></div>'
+   +'<button class="btn sm" id="db_add">追加</button></div>';
+  if(ds.list.some(d=>d.bal>0)&&S.set.gasUrl)
+    h+='<div style="height:10px"></div><button class="btn" id="db_ai">AIに返済プランを相談する</button>';
+  sheet(h);
+  document.querySelectorAll('.rpGo').forEach(b=>b.onclick=()=>{
+    const inp=document.querySelector('.rpAmt[data-id="'+b.dataset.id+'"]');
+    const v=+inp.value||0; if(!v){toast('返済額を入れて');return;}
+    addRepay(b.dataset.id,v); closeSheet(); renderAll(); toast(fmt(v)+' 返済を記録した'); });
+  document.querySelectorAll('.dbDel').forEach(b=>b.onclick=()=>{
+    if(b.dataset.arm){S.debts=S.debts.filter(x=>x.id!==b.dataset.id);S.repays=S.repays.filter(r=>r.debtId!==b.dataset.id);save();closeSheet();renderAll();toast('削除した');}
+    else{b.dataset.arm='1';b.textContent='本当に削除（もう一度）';}});
+  $('#db_add').onclick=()=>{
+    const name=$('#db_name').value.trim(), total=+$('#db_total').value||0;
+    if(!name||!total){toast('名前と総額を入れて');return;}
+    const id=uid();
+    S.debts.push({id,name,total,rate:+$('#db_rate').value||0,monthly:+$('#db_month').value||0});
+    const already=+$('#db_paid').value||0;
+    if(already)S.repays.push({id:uid(),debtId:id,amount:already,date:todayStr()});
+    save(); openDebt(); renderAll(); toast('追加した'); };
+  const dbai=$('#db_ai'); if(dbai)dbai.onclick=async()=>{
+    dbai.textContent='考えてる…';
+    try{ const j=await api('ai',{mode:'debt',context:{...ctxForAI(),
+      debts:ds.list.map(d=>({name:d.name,残債:d.bal,年利:d.rate,毎月:d.monthly,あと何ヶ月:isFinite(d.months)?d.months:'減らない',今後の利息:d.interest}))}});
+      sheet('<h3>返済プラン</h3><div style="font-size:14.5px;line-height:1.8;white-space:pre-wrap">'+esc(j.text||'')+'</div>'
+        +'<div style="height:12px"></div><button class="btn" onclick="openDebt()">戻る</button>');
+    }catch(e){toast('AIエラー: '+e.message);dbai.textContent='AIに返済プランを相談する';} };
+};
 document.addEventListener('click',e=>{
+  const dd=e.target.closest('.goDebt'); if(dd){openDebt();return;}
   const c=e.target.closest('.goCat'); if(c){openCat(c.dataset.cat);return;}
   const k=e.target.closest('.goKeihi'); if(k){openKeihi();return;}
   const d=e.target.closest('.goCard'); if(d){openCard(d.dataset.card);return;}
