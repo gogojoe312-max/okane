@@ -1,4 +1,4 @@
-const C='okane-2026-08-29-i';
+const C='okane-2026-08-29-j';
 self.addEventListener('install',e=>{self.skipWaiting();});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.map(k=>k!==C&&caches.delete(k)))));self.clients.claim();});
 self.addEventListener('fetch',e=>{
