@@ -154,7 +154,7 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-b';
+const APP_VER='2026-08-29-c';
 const STORE_KEY='okane_v1';
 const DEF_CATS=['食費','日用品','交通','趣味・娯楽','サブスク・固定費','その他'];
 let S=null, curTab='s-home', chatHist=[];
@@ -235,7 +235,7 @@ function updateTx(id,patch){const i=S.tx.findIndex(x=>x.id===id); if(i<0)return;
 /* ---------- render: home ---------- */
 function stats(){
   const p=period();
-  const inP=S.tx.filter(t=>inPeriod(t.date,p));
+  const inP=S.tx.filter(t=>inPeriod(t.date,p)&&!t.skip);
   const personal=inP.filter(t=>!t.keihi);
   const spent=personal.reduce((a,t)=>a+ (+t.amount||0),0);
   const keihi=inP.filter(t=>t.keihi);
@@ -296,10 +296,10 @@ function renderTx(){
     if(t.date!==lastD){ if(lastD)h+='</div>'; lastD=t.date;
       const dd=new Date(t.date+'T12:00'); const isT=t.date===todayStr();
       h+='<div class="sect num">'+(isT?'今日 ':'')+(dd.getMonth()+1)+'/'+dd.getDate()+'</div><div class="group">';}
-    h+='<div class="row44 tr2 '+(t.keihi?'off':'')+'" onclick="editTx(\''+t.id+'\')">'
+    h+='<div class="row44 tr2 '+(t.keihi||t.skip?'off':'')+'" onclick="editTx(\''+t.id+'\')">'
      +'<span class="isq" style="'+(t.src==='csv'?'font-size:9px;font-weight:700':'')+'">'+(SRC_IC[t.src]||'✎')+'</span>'
      +'<span class="shop"><span class="s1">'+esc(t.store||'（店名なし）')+'</span><span class="s2 num">'+(t.time?t.time+' ・ ':'')+esc(t.card||t.memo||'')+'</span></span>'
-     +'<span class="tag2 '+(t.keihi?'k':'')+'">'+(t.keihi?'経費':esc(t.cat||'その他'))+'</span>'
+     +'<span class="tag2 '+(t.keihi?'k':'')+'">'+(t.skip?'対象外':(t.keihi?'経費':esc(t.cat||'その他')))+'</span>'
      +'<span class="amt num">'+fmt(t.amount)+'</span></div>';
   });
   h+='</div>';
@@ -318,13 +318,13 @@ window.editTx=id=>{
    +'<div class="frow"><label>金額</label><input id="e_amt" type="number" value="'+(+t.amount||0)+'"></div>'
    +'<div class="frow"><label>日付</label><input id="e_date" type="date" value="'+t.date+'"></div>'
    +'<div class="frow"><label>カテゴリ</label><select id="e_cat">'+S.cats.map(c=>'<option '+(t.cat===c?'selected':'')+'>'+esc(c)+'</option>').join('')+'</select></div>'
-   +'<div class="frow"><label>経費</label><div class="seg" id="e_keihi"><button class="'+(!t.keihi?'on':'')+'" data-v="0">個人</button><button class="'+(t.keihi?'on':'')+'" data-v="1">経費</button></div></div>'
+   +'<div class="frow"><label>区分</label><div class="seg" id="e_kind"><button class="'+(!t.keihi&&!t.skip?'on':'')+'" data-v="p">個人</button><button class="'+(t.keihi?'on':'')+'" data-v="k">経費</button><button class="'+(t.skip?'on':'')+'" data-v="s">対象外</button></div></div>'
    +'<button class="btn pri" id="e_save">保存</button>'
    +'<div style="height:8px"></div><button class="btn danger" id="e_del">削除</button>');
-  let keihi=!!t.keihi;
-  $('#e_keihi').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;keihi=b.dataset.v==='1';[...$('#e_keihi').children].forEach(x=>x.classList.toggle('on',x===b));});
-  $('#e_save').onclick=()=>{const oldCat=t.cat;
-    updateTx(id,{store:$('#e_store').value.trim(),amount:+$('#e_amt').value||0,date:$('#e_date').value,cat:$('#e_cat').value,keihi});
+  let kind=t.skip?'s':(t.keihi?'k':'p');
+  $('#e_kind').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;kind=b.dataset.v;[...$('#e_kind').children].forEach(x=>x.classList.toggle('on',x===b));});
+  $('#e_save').onclick=()=>{
+    updateTx(id,{store:$('#e_store').value.trim(),amount:+$('#e_amt').value||0,date:$('#e_date').value,cat:$('#e_cat').value,keihi:kind==='k',skip:kind==='s'});
     closeSheet();toast('保存した');};
   $('#e_del').onclick=()=>{ // two-step
     if($('#e_del').dataset.arm){S.tx=S.tx.filter(x=>x.id!==id);save();api('del',{id}).catch(()=>{});closeSheet();renderAll();toast('削除した');}
@@ -399,7 +399,15 @@ $('#jsonFile').addEventListener('change',e=>{const f=e.target.files[0];if(!f)ret
   const r=new FileReader();r.onload=()=>{try{const j=JSON.parse(r.result);if(j.tx){S=j;save();renderAll();toast('読み込んだ');}else toast('形式が違う');}catch(err){toast('読めない');}};
   r.readAsText(f);e.target.value='';});
 
-/* ---------- CSV import ---------- */
+/* ---------- CSV import (mapping → preview) ---------- */
+function bankRule(store){
+  if(/カード|ｶｰﾄﾞ|ラクテン|ﾗｸﾃﾝ|楽天カ|三井住友カ|ミツイスミトモ|ﾐﾂｲｽﾐﾄﾓ|SMBCカ|JCB|AMEX|ビューカ|ETC/i.test(store))return{skip:true,why:'カード引落(二重防止)'};
+  if(/ATM|引出|お引き?出し|ｷｬｯｼｭ/i.test(store))return{skip:true,why:'ATM引出'};
+  if(/振込.*手数料|手数料/.test(store))return{cat:'その他'};
+  if(/家賃|ヤチン|ﾔﾁﾝ|管理費|電気|ガス|水道|ＮＨＫ|NHK|保険|ホケン/i.test(store))return{cat:'サブスク・固定費'};
+  return{cat:guessCat(store)};
+}
+let _csvItems=null;
 $('#csvFile').addEventListener('change',async e=>{
   const f=e.target.files[0]; if(!f)return; e.target.value='';
   const buf=await f.arrayBuffer();
@@ -409,26 +417,65 @@ $('#csvFile').addEventListener('change',async e=>{
   if(rows.length<2){toast('行が読めない');return;}
   const head=rows[0];
   const gi=(names)=>head.findIndex(h=>names.some(n=>h.includes(n)));
-  let ci={date:gi(['日付','年月日','取引日','日']),out:gi(['出金','支払','引出','出金額']),inm:gi(['入金','預入']),desc:gi(['摘要','内容','取引内容','店','備考'])};
-  sheet('<h3>CSV取込</h3><div class="footnote">列の対応を確認（自動判定済み）</div>'
-   +['date:日付','out:出金額','desc:摘要'].map(k=>{const[key,lbl]=k.split(':');
+  let ci={date:gi(['利用日','日付','年月日','取引日','日']),out:gi(['利用金額','出金','支払','引出','金額']),desc:gi(['利用店名','摘要','内容','取引内容','店','利用先','備考'])};
+  sheet('<h3>CSV取込 1/2 — 列の対応</h3><div class="footnote">自動判定済み。違ったら直して</div>'
+   +['date:日付','out:金額（出金）','desc:店名・摘要'].map(k=>{const[key,lbl]=k.split(':');
      return '<div class="frow"><label>'+lbl+'</label><select id="csv_'+key+'">'+head.map((h,i)=>'<option value="'+i+'" '+(ci[key]===i?'selected':'')+'>'+esc(h||('列'+(i+1)))+'</option>').join('')+'</select></div>';}).join('')
-   +'<div class="frow"><label>カテゴリ（一括）</label><select id="csv_cat">'+S.cats.map(c=>'<option '+(c==='サブスク・固定費'?'selected':'')+'>'+esc(c)+'</option>').join('')+'</select></div>'
-   +'<button class="btn pri" id="csv_go">取り込む（'+(rows.length-1)+'行）</button>');
-  $('#csv_go').onclick=()=>{
-    const d=+$('#csv_date').value,o=+$('#csv_out').value,ds=+$('#csv_desc').value,cat=$('#csv_cat').value;
-    let n=0;
+   +'<button class="btn pri" id="csv_next">次へ（プレビュー）</button>');
+  $('#csv_next').onclick=()=>{
+    const d=+$('#csv_date').value,o=+$('#csv_out').value,ds=+$('#csv_desc').value;
+    const items=[];
     rows.slice(1).forEach(r=>{
       const amt=parseInt((r[o]||'').replace(/[^0-9]/g,''),10); if(!amt)return;
       let dt=(r[d]||'').replace(/[年月]/g,'-').replace(/日/,'').replace(/\//g,'-');
       const m=dt.match(/(\d{4})-(\d{1,2})-(\d{1,2})/); if(!m)return;
       dt=m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0');
-      const t={date:dt,amount:amt,store:r[ds]||'口座振替',cat,keihi:false,src:'csv'};
-      if(addTx(t,{silent:true}))n++;
+      const store=(r[ds]||'').trim()||'（摘要なし）';
+      const rule=bankRule(store);
+      const dup=S.tx.some(x=>x.date===dt&&+x.amount===amt&&!x.skip);
+      items.push({date:dt,amount:amt,store,cat:rule.cat||'その他',
+        on:!(rule.skip||dup), why:dup?'既存と同日同額(重複?)':(rule.why||'')});
     });
-    closeSheet();renderAll();toast(n+'件 取り込み（重複除外）');
+    if(!items.length){toast('取り込める行がない');closeSheet();return;}
+    _csvItems=items; csvPreview();
   };
 });
+function csvPreview(){
+  const items=_csvItems;
+  let h='<h3>CSV取込 2/2 — 中身の確認（'+items.length+'行）</h3>'
+   +'<div class="frow"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="cvKeihi" style="width:auto">全部「経費」として取り込む（仕事用カードのCSV向け）</label></div>'
+   +(S.set.gasUrl?'<button class="btn sm" id="cvAI" style="margin-bottom:10px">AIで分類し直す</button>':'')
+   +'<div style="max-height:46vh;overflow-y:auto;border:1px solid var(--fill);border-radius:10px;padding:4px 8px">';
+  items.forEach((it,i)=>{
+    h+='<div style="display:flex;align-items:center;gap:7px;padding:6px 0;border-bottom:.5px solid var(--sep);font-size:12.5px" class="num">'
+     +'<input type="checkbox" data-i="'+i+'" class="cvOn" '+(it.on?'checked':'')+' style="width:auto">'
+     +'<span style="width:44px;color:var(--sec)">'+it.date.slice(5)+'</span>'
+     +'<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(it.store)+(it.why?'<br><span style="color:var(--red);font-size:10px">'+esc(it.why)+'</span>':'')+'</span>'
+     +'<select data-i="'+i+'" class="cvCat" style="width:88px;font-size:11px;padding:4px 6px">'+S.cats.map(c=>'<option '+(it.cat===c?'selected':'')+'>'+esc(c)+'</option>').join('')+'</select>'
+     +'<span style="width:64px;text-align:right;font-weight:600">'+fmt(it.amount)+'</span></div>';
+  });
+  h+='</div><div style="height:10px"></div><button class="btn pri" id="cvGo">チェックした行を取り込む</button>';
+  sheet(h);
+  document.querySelectorAll('.cvOn').forEach(c=>c.onchange=()=>{items[+c.dataset.i].on=c.checked;});
+  document.querySelectorAll('.cvCat').forEach(s=>s.onchange=()=>{items[+s.dataset.i].cat=s.value;});
+  const ai=$('#cvAI'); if(ai)ai.onclick=async()=>{
+    ai.textContent='分類中…';
+    try{
+      const j=await api('ai',{mode:'classify',cats:S.cats,items:items.map((it,i)=>({i,store:it.store,amount:it.amount}))});
+      (j.items||[]).forEach(r=>{const it=items[r.i]; if(!it)return;
+        if(r.skip){it.on=false;it.why=r.why||'AI判定:対象外';}
+        if(r.cat&&S.cats.includes(r.cat))it.cat=r.cat;});
+      csvPreview();
+    }catch(err){toast('AI分類エラー: '+err.message);ai.textContent='AIで分類し直す';}
+  };
+  $('#cvGo').onclick=()=>{
+    const keihi=$('#cvKeihi').checked; let n=0;
+    items.filter(it=>it.on).forEach(it=>{
+      if(addTx({date:it.date,amount:it.amount,store:it.store,cat:it.cat,keihi,skip:false,src:'csv',card:'銀行/CSV'},{silent:true}))n++;
+    });
+    closeSheet();renderAll();toast(n+'件 取り込んだ（重複は除外）');
+  };
+}
 
 /* ---------- AI input / chat ---------- */
 function ctxForAI(){
