@@ -154,7 +154,7 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-d';
+const APP_VER='2026-08-29-e';
 const STORE_KEY='okane_v1';
 const DEF_CATS=['食費','日用品','交通','趣味・娯楽','サブスク・固定費','その他'];
 let S=null, curTab='s-home', chatHist=[];
@@ -464,6 +464,7 @@ function renderSet(){
    +'<button class="btn" id="st_csv">銀行CSVを取り込む</button></div>'
    +'<div class="sect">バックアップ</div><div class="group" style="padding:12px 16px;display:flex;gap:8px;flex-direction:column">'
    +'<button class="btn" id="st_exp">JSON書き出し</button><button class="btn" id="st_imp">JSON読み込み</button>'
+   +'<button class="btn" id="st_upd">アプリを最新にする（キャッシュ削除）</button>'
    +'<button class="btn danger" id="st_wipe">全データ削除</button></div>'
    +'<div class="footnote num" style="padding-top:14px">お金 '+APP_VER+'</div>';
   $('#st_test').onclick=async()=>{S.set.gasUrl=$('#st_gas').value.trim();S.set.pass=$('#st_pass').value.trim();save();
@@ -487,6 +488,14 @@ function renderSet(){
     a.href='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(S,null,1));
     a.download='okane-backup-'+todayStr()+'.json';a.click();};
   $('#st_imp').onclick=()=>$('#jsonFile').click();
+  $('#st_upd').onclick=async()=>{
+    $('#st_upd').textContent='更新中…';
+    try{
+      if('caches' in window){const ks=await caches.keys();await Promise.all(ks.map(k=>caches.delete(k)));}
+      if(navigator.serviceWorker){const rs=await navigator.serviceWorker.getRegistrations();await Promise.all(rs.map(r=>r.unregister()));}
+    }catch(e){}
+    location.replace(location.pathname+'?u='+Date.now());
+  };
   $('#st_wipe').onclick=()=>{
     if($('#st_wipe').dataset.arm){localStorage.removeItem(STORE_KEY);location.reload();}
     else{$('#st_wipe').dataset.arm='1';$('#st_wipe').textContent='本当に全部消す（もう一度タップ）';}};
@@ -495,44 +504,90 @@ $('#jsonFile').addEventListener('change',e=>{const f=e.target.files[0];if(!f)ret
   const r=new FileReader();r.onload=()=>{try{const j=JSON.parse(r.result);if(j.tx){S=j;save();renderAll();toast('読み込んだ');}else toast('形式が違う');}catch(err){toast('読めない');}};
   r.readAsText(f);e.target.value='';});
 
-/* ---------- CSV import (mapping → preview) ---------- */
+/* ---------- CSV import (detect → mapping → preview) ---------- */
 function bankRule(store){
   if(/カード|ｶｰﾄﾞ|ラクテン|ﾗｸﾃﾝ|楽天カ|三井住友カ|ミツイスミトモ|ﾐﾂｲｽﾐﾄﾓ|SMBCカ|JCB|AMEX|ビューカ|ETC/i.test(store))return{skip:true,why:'カード引落(二重防止)'};
-  if(/ATM|引出|お引き?出し|ｷｬｯｼｭ/i.test(store))return{skip:true,why:'ATM引出'};
-  if(/振込.*手数料|手数料/.test(store))return{cat:'その他'};
-  if(/家賃|ヤチン|ﾔﾁﾝ|管理費|電気|ガス|水道|ＮＨＫ|NHK|保険|ホケン/i.test(store))return{cat:'サブスク・固定費'};
+  if(/ATM|引出|お引き?出し|ｷｬｯｼｭ|ギンコウATM|ｷﾞﾝｺｳATM/i.test(store))return{skip:true,why:'ATM引出'};
+  if(/振込|フリコミ|ﾌﾘｺﾐ|口座振替/.test(store)&&/カンリコウザ|管理口座|ネツトフリコミ|ﾈﾂﾄﾌﾘｺﾐ/.test(store))return{skip:true,why:'振替の可能性'};
+  if(/家賃|ヤチン|ﾔﾁﾝ|管理費|タカマツエステ|電気|ガス|水道|ＮＨＫ|NHK|保険|ホケン|mobile|ﾓﾊﾞｲﾙ|UQ|ＵＱ|ドコモ|ソフトバンク|ペイペイ|ﾍﾟｲﾍﾟｲ/i.test(store))return{cat:FIXCAT};
   return{cat:guessCat(store)};
+}
+function parseCsvText(text){
+  text=text.replace(/^\uFEFF/,'');
+  const rows=text.split(/\r?\n/).map(l=>{
+    const out=[];let cur='',q=false;
+    for(let i=0;i<l.length;i++){const c=l[i];
+      if(c==='"'){ if(q&&l[i+1]==='"'){cur+='"';i++;} else q=!q; }
+      else if(c===','&&!q){out.push(cur.trim());cur='';}
+      else cur+=c;}
+    out.push(cur.trim());return out;});
+  return rows.filter(r=>r.some(c=>c!==''));
+}
+const isDateCell=v=>/^\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}/.test((v||'').trim());
+const numCell=v=>{const n=parseInt(String(v||'').replace(/[^0-9]/g,''),10);return isNaN(n)?0:n;};
+function detectCsv(rows){
+  // 1) ヘッダー行を探す
+  let hi=-1;
+  for(let i=0;i<Math.min(6,rows.length);i++){
+    if(rows[i].some(c=>/^(利用日|日付|ご利用日|取引日|年月日)$/.test(c))){hi=i;break;}
+  }
+  if(hi>=0){
+    const head=rows[hi], data=rows.slice(hi+1);
+    const find=(re)=>head.findIndex(h=>re.test(h));
+    const date=find(/利用日|日付|取引日|年月日/);
+    let amt=find(/^利用金額$/); if(amt<0)amt=find(/支払い?金額|出金|引落|^金額$/); if(amt<0)amt=find(/支払総額/);
+    let desc=find(/利用店名|摘要内容|利用先|加盟店/); if(desc<0)desc=find(/店名|摘要|内容|商品名/);
+    let desc2=head.findIndex((h,i)=>i!==desc&&/摘要$/.test(h));
+    return {head,data,map:{date,amt,desc,desc2},name:head.some(h=>/利用店名/.test(h))?'カード明細':'銀行明細'};
+  }
+  // 2) ヘッダー無し（三井住友VISA等）→ 位置から推定
+  const data=rows.filter(r=>isDateCell(r[0]));
+  if(!data.length)return null;
+  const s=data[0];
+  let amt=-1;
+  for(let i=1;i<s.length;i++){const n=numCell(s[i]); if(n>0&&n<10000000&&!isDateCell(s[i])){amt=i;break;}}
+  const head=rows[0].map((_,i)=>'列'+(i+1));
+  while(head.length<s.length)head.push('列'+(head.length+1));
+  return {head,data,map:{date:0,amt:amt<0?2:amt,desc:1,desc2:-1},name:'カード明細（ヘッダー無し）',noHead:true};
 }
 let _csvItems=null;
 $('#csvFile').addEventListener('change',async e=>{
   const f=e.target.files[0]; if(!f)return; e.target.value='';
   const buf=await f.arrayBuffer();
-  let text; try{text=new TextDecoder('shift-jis').decode(buf);}catch(_){text=new TextDecoder().decode(buf);}
-  if(/�/.test(text))text=new TextDecoder().decode(buf);
-  const rows=text.split(/\r?\n/).map(l=>l.split(',').map(c=>c.replace(/^"|"$/g,'').trim())).filter(r=>r.length>1);
+  let text=new TextDecoder('utf-8').decode(buf);
+  if(/\uFFFD/.test(text)){try{text=new TextDecoder('shift-jis').decode(buf);}catch(_){}}
+  const rows=parseCsvText(text);
   if(rows.length<2){toast('行が読めない');return;}
-  const head=rows[0];
-  const gi=(names)=>head.findIndex(h=>names.some(n=>h.includes(n)));
-  let ci={date:gi(['利用日','日付','年月日','取引日','日']),out:gi(['利用金額','出金','支払','引出','金額']),desc:gi(['利用店名','摘要','内容','取引内容','店','利用先','備考'])};
-  sheet('<h3>CSV取込 1/2 — 列の対応</h3><div class="footnote">自動判定済み。違ったら直して</div>'
-   +['date:日付','out:金額（出金）','desc:店名・摘要'].map(k=>{const[key,lbl]=k.split(':');
-     return '<div class="frow"><label>'+lbl+'</label><select id="csv_'+key+'">'+head.map((h,i)=>'<option value="'+i+'" '+(ci[key]===i?'selected':'')+'>'+esc(h||('列'+(i+1)))+'</option>').join('')+'</select></div>';}).join('')
-   +'<button class="btn pri" id="csv_next">次へ（プレビュー）</button>');
+  const det=detectCsv(rows);
+  if(!det){toast('日付の列が見つからない');return;}
+  const sample=det.data[0]||[];
+  const opt=(sel)=>det.head.map((h,i)=>'<option value="'+i+'" '+(sel===i?'selected':'')+'>'+esc(h||('列'+(i+1)))+' … '+esc(String(sample[i]||'').slice(0,14))+'</option>').join('');
+  sheet('<h3>CSV取込 1/2 — 列の対応</h3>'
+   +'<div class="footnote">'+esc(det.name)+' として認識（'+det.data.length+'行）。カッコ内は1行目の値。違ったら直して</div>'
+   +'<div class="frow"><label>日付</label><select id="csv_date">'+opt(det.map.date)+'</select></div>'
+   +'<div class="frow"><label>金額</label><select id="csv_amt">'+opt(det.map.amt)+'</select></div>'
+   +'<div class="frow"><label>店名・摘要</label><select id="csv_desc">'+opt(det.map.desc)+'</select></div>'
+   +'<button class="btn pri" id="csv_next">次へ（中身を確認）</button>');
   $('#csv_next').onclick=()=>{
-    const d=+$('#csv_date').value,o=+$('#csv_out').value,ds=+$('#csv_desc').value;
-    const items=[];
-    rows.slice(1).forEach(r=>{
-      const amt=parseInt((r[o]||'').replace(/[^0-9]/g,''),10); if(!amt)return;
-      let dt=(r[d]||'').replace(/[年月]/g,'-').replace(/日/,'').replace(/\//g,'-');
-      const m=dt.match(/(\d{4})-(\d{1,2})-(\d{1,2})/); if(!m)return;
+    const d=+$('#csv_date').value,o=+$('#csv_amt').value,ds=+$('#csv_desc').value,d2=det.map.desc2;
+    const items=[]; let bad=0;
+    det.data.forEach(r=>{
+      if(!isDateCell(r[d]))return;                 // 日付が無い行(小計・注記)は捨てる
+      const amt=numCell(r[o]); if(!amt)return;      // 空欄=入金行などは捨てる
+      let dt=String(r[d]).replace(/[年月]/g,'/').replace(/日/,'').replace(/-/g,'/');
+      const m=dt.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})/); if(!m)return;
       dt=m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0');
-      const store=(r[ds]||'').trim()||'（摘要なし）';
+      let store=String(r[ds]||'').trim();
+      if(d2>=0&&r[d2]&&!store.includes(r[d2]))store=(r[d2]+' '+store).trim();
+      if(!store)store='（摘要なし）';
+      if(amt>1000000||isDateCell(r[o])){bad++;}     // 明らかな誤マッピング
       const rule=bankRule(store);
       const dup=S.tx.some(x=>x.date===dt&&+x.amount===amt&&!x.skip);
       items.push({date:dt,amount:amt,store,cat:rule.cat||'その他',
-        on:!(rule.skip||dup), why:dup?'既存と同日同額(重複?)':(rule.why||'')});
+        on:!(rule.skip||dup||amt>1000000), why:dup?'既存と同日同額(重複?)':(amt>1000000?'金額が異常。列が違うかも':(rule.why||''))});
     });
-    if(!items.length){toast('取り込める行がない');closeSheet();return;}
+    if(!items.length){toast('取り込める行がない');return;}
+    if(bad>items.length/2){toast('金額の列が違うかも。戻って選び直して');}
     _csvItems=items; csvPreview();
   };
 });
@@ -607,11 +662,12 @@ async function handleInput(text){
   }catch(e){$('#chatLog').lastChild.remove();pushBub('ai2','エラー: '+e.message);}
 }
 function guessCat(store){
-  const s=store.toLowerCase();
-  if(/セブン|ファミマ|ローソン|コンビニ|スーパー|マルエツ|オーケー|ラーメン|マック|吉野家|すき家|カフェ|飯|弁当|パン/.test(store))return '食費';
-  if(/薬|ドラッグ|マツキヨ|ウエルシア|100均|ダイソー|ニトリ/.test(store))return '日用品';
-  if(/jr|メトロ|タクシー|電車|バス|suica|pasmo|駐車/i.test(store))return '交通';
-  if(/amazon|プラグイン|ゲーム|映画|本|服|ライブ/i.test(store))return '趣味・娯楽';
+  const s=(store||'').normalize('NFKC');
+  if(/セブン|ｾﾌﾞﾝ|ファミリーマート|ﾌｱﾐﾘ|ローソン|ﾛ-ｿﾝ|ミニストップ|コンビニ|イオン|ｲｵﾝ|マルエツ|オーケー|ライフ|西友|スーパー|まいばすけっと|ジャパンビバレッジ|ｼﾞﾔﾊﾟﾝ|自販機|ラーメン|寿司|鮨|居酒屋|食堂|キッチン|レストラン|カフェ|CAFE|スターバックス|ドトール|マクドナルド|吉野家|すき家|松屋|ブロンコビリー|焼肉|定食|弁当|パン|ベーカリー|酒|ビール|まぐろ|廻鮮/i.test(s))return '食費';
+  if(/薬|ドラッグ|マツモトキヨシ|ウエルシア|サンドラッグ|ダイソー|セリア|100円|ニトリ|無印|ホームセンター|カインズ|クリーニング|ランドリー|理容|美容|ヘアー|AF浦安/i.test(s))return '日用品';
+  if(/JR|ＪＲ|メトロ|東京地下鉄|京急|京成|東急|小田急|西武|東武|タクシー|GO（|GOアプリ|Uber|ウーバー|Suica|ｽｲｶ|PASMO|パスモ|バス|新幹線|駐車|パーキング|ETC|高速|航空|ANA|JAL/i.test(s))return '交通';
+  if(/AMAZON|楽天市場|メルカリ|ZOZO|ユニクロ|GU|古着|mellow|イクスピアリ|映画|シネマ|TOHO|ゲーム|PLAYSTATION|PS5|Nintendo|STEAM|書店|ブックオフ|漫画|ヤンジャン|музы|音楽|楽器|サウンドハウス|島村|SOUNDFLOW|SUNO|プラグイン|Plugin|Waves|Native Instruments|ライブ|チケット|スタジオ/i.test(s))return '趣味・娯楽';
+  if(/NETFLIX|SPOTIFY|U-NEXT|Hulu|Disney|APPLE|Google|ADOBE|ANTHROPIC|OpenAI|ChatGPT|Dropbox|iCloud|UQ|ドコモ|ソフトバンク|au|ahamo|povo|楽天モバイル|電力|東京電力|ガス|水道|NHK|保険|家賃|管理費|ペイペイ|PayPal|月額|会費|年会費/i.test(s))return FIXCAT;
   return 'その他';
 }
 $('#btnSend').onclick=()=>{const v=$('#aiIn').value.trim();if(!v)return;$('#aiIn').value='';handleInput(v);};
