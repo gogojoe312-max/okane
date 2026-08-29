@@ -15,7 +15,7 @@
 var MODEL_CHAT = 'claude-sonnet-4-6';
 var MODEL_LIGHT = 'claude-haiku-4-5-20251001';
 var SHEET_NAME = 'tx';
-var HEAD = ['id','date','time','amount','store','cat','keihi','src','card','memo','createdAt','updatedAt'];
+var HEAD = ['id','date','time','amount','store','cat','keihi','src','card','memo','createdAt','updatedAt','skip'];
 var MAIL_QUERY = 'newer_than:2d -label:OKANE_DONE (from:rakuten-card.co.jp OR from:mail.rakuten-card.co.jp OR from:vpass.ne.jp OR from:smbc-card.com OR from:contact.vpass.ne.jp OR (from:amazon.co.jp subject:ご注文))';
 var DEFAULT_CATS = ['食費','日用品','交通','趣味・娯楽','サブスク・固定費','その他'];
 
@@ -65,6 +65,7 @@ function rows_(){
     var r = v[i]; if(!r[0]) continue;
     var o = {}; HEAD.forEach(function(h,j){ o[h]=r[j]; });
     o.amount = Number(o.amount)||0; o.keihi = (o.keihi===true||o.keihi==='TRUE'||o.keihi==='true'||o.keihi===1);
+    o.skip = (o.skip===true||o.skip==='TRUE'||o.skip==='true'||o.skip===1);
     o.createdAt = Number(o.createdAt)||0; o.updatedAt = Number(o.updatedAt)||0;
     if(o.date instanceof Date) o.date = Utilities.formatDate(o.date,'Asia/Tokyo','yyyy-MM-dd');
     out.push(o);
@@ -129,7 +130,18 @@ function ai_(p){
   if(p.mode==='chat')   return aiChat_(p);
   if(p.mode==='receipt')return aiReceipt_(p);
   if(p.mode==='review') return aiReview_(p);
+  if(p.mode==='classify')return aiClassify_(p);
   throw new Error('unknown ai mode');
+}
+function aiClassify_(p){
+  var cats=(p.cats&&p.cats.length)?p.cats:DEFAULT_CATS;
+  var sys='銀行・カード明細の各行を分類し、JSONだけを返す（前置き・コードブロック禁止）。'
+    +'形式: {"items":[{"i":番号,"cat":"カテゴリ","skip":true/false,"why":"skip理由(短く)"}]}。'
+    +'skip=trueにするのは支出でない行だけ: カード会社への引落(カード利用は別で取込済みのため二重計上になる)、ATM引出、自分の口座間振替、投資・積立の移動。'
+    +'手数料・年会費・公共料金・家賃・買い物は支出なのでskip=false。catは次から: '+cats.join('/');
+  var text=claude_(MODEL_LIGHT, sys, [{role:'user',content:JSON.stringify(p.items||[])}], 2000);
+  var j=tryJson_(text)||{};
+  return { items: j.items||[] };
 }
 function aiChat_(p){
   var sys = 'あなたは家計アプリ「お金」のAI。ユーザーの支出データと予算を根拠に、短く率直に日本語で答える。'
