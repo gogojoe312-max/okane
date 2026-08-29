@@ -17,7 +17,7 @@ var MODEL_LIGHT = 'claude-haiku-4-5-20251001';
 var SHEET_NAME = 'tx';
 var HEAD = ['id','date','time','amount','store','cat','keihi','src','card','memo','createdAt','updatedAt','skip'];
 var MAIL_QUERY = 'newer_than:2d -label:OKANE_DONE (from:rakuten-card.co.jp OR from:mail.rakuten-card.co.jp OR from:vpass.ne.jp OR from:smbc-card.com OR from:contact.vpass.ne.jp OR (from:amazon.co.jp subject:ご注文))';
-var DEFAULT_CATS = ['食費','日用品','交通','趣味・娯楽','サブスク・固定費','その他'];
+var DEFAULT_CATS = ['食費','日用品','交通','服・美容','趣味・娯楽','サブスク・固定費','その他'];
 
 /* ---------- entry ---------- */
 function doPost(e){
@@ -135,11 +135,21 @@ function ai_(p){
 }
 function aiClassify_(p){
   var cats=(p.cats&&p.cats.length)?p.cats:DEFAULT_CATS;
+  var rules=p.rules||{};
+  var rtxt='';
+  var ks=Object.keys(rules);
+  if(ks.length){
+    rtxt='\n【ユーザーが過去に手で直した分類（最優先で踏襲し、似た店も同じ扱いにする）】\n';
+    ks.slice(0,120).forEach(function(k){ rtxt+= k+' → '+rules[k]+'\n'; });
+  }
   var sys='銀行・カード明細の各行を分類し、JSONだけを返す（前置き・コードブロック禁止）。'
     +'形式: {"items":[{"i":番号,"cat":"カテゴリ","skip":true/false,"why":"skip理由(短く)"}]}。'
     +'skip=trueにするのは支出でない行だけ: カード会社への引落(カード利用は別で取込済みのため二重計上になる)、ATM引出、自分の口座間振替、投資・積立の移動。'
-    +'手数料・年会費・公共料金・家賃・買い物は支出なのでskip=false。catは次から: '+cats.join('/');
-  var text=claude_(MODEL_LIGHT, sys, [{role:'user',content:JSON.stringify(p.items||[])}], 2000);
+    +'手数料・年会費・公共料金・家賃・買い物は支出なのでskip=false。'
+    +'店名は全角/半角カナや略記が多い(例: ｾﾌﾞﾝ-ｲﾚﾌﾞﾝ=コンビニ、ｼﾞﾔﾊﾟﾝﾋﾞﾊﾞﾚﾂｼﾞ=自販機、GO=タクシー配車、AF/サロン系=理美容)。'
+    +'日本の店舗・サービス名の実態から判断し、迷ったら金額の大きさと業種で推定する。「その他」は本当に判断不能な時だけ。'
+    +'catは次から選ぶ: '+cats.join('/')+rtxt;
+  var text=claude_(MODEL_CHAT, sys, [{role:'user',content:JSON.stringify(p.items||[])}], 4000);
   var j=tryJson_(text)||{};
   return { items: j.items||[] };
 }
