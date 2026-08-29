@@ -154,14 +154,14 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-c';
+const APP_VER='2026-08-29-d';
 const STORE_KEY='okane_v1';
 const DEF_CATS=['食費','日用品','交通','趣味・娯楽','サブスク・固定費','その他'];
 let S=null, curTab='s-home', chatHist=[];
 
 /* ---------- storage (versioned) ---------- */
 function defState(){return {sver:1, tx:[], cats:[...DEF_CATS],
-  budget:{total:0, per:{}}, goal:{save:0, note:''},
+  budget:{total:0, per:{}}, goal:{save:0, note:''}, fixed:[],
   set:{gasUrl:'', pass:'', startDay:25},
   aiNote:'', lastSync:0};}
 function load(){
@@ -171,6 +171,7 @@ function load(){
     if(!S.sver){S.sver=1;} // future migrations branch on sver
     if(!S.cats||!S.cats.length)S.cats=[...DEF_CATS];
     if(!S.set)S.set={gasUrl:'',pass:'',startDay:25};
+    if(!S.fixed)S.fixed=[];
   }catch(e){S=defState();}
 }
 function save(){try{localStorage.setItem(STORE_KEY,JSON.stringify(S));}catch(e){}}
@@ -233,6 +234,7 @@ function addTx(t,opts){
 function updateTx(id,patch){const i=S.tx.findIndex(x=>x.id===id); if(i<0)return; Object.assign(S.tx[i],patch); S.tx[i].serverWins=false; save(); pushTx([S.tx[i]]); renderAll();}
 
 /* ---------- render: home ---------- */
+const FIXCAT='サブスク・固定費';
 function stats(){
   const p=period();
   const inP=S.tx.filter(t=>inPeriod(t.date,p)&&!t.skip);
@@ -245,9 +247,17 @@ function stats(){
   const now=new Date();
   const totalDays=Math.round((p.e-p.s)/86400000);
   const passed=Math.min(totalDays,Math.max(0,Math.floor((now-p.s)/86400000)+1));
-  const left=Math.max(0,(S.budget.total||0)-spent);
   const daysLeft=Math.max(0,totalDays-passed);
-  return {p,spent,left,keihiSum,keihiCnt:keihi.length,perCat,totalDays,passed,daysLeft,personal};
+  // 固定費: 台帳の見込みを予算から先取りし、残りを変動費として管理
+  const fixedPlan=S.fixed.filter(f=>!f.keihi).reduce((a,f)=>a+(+f.amount||0),0);
+  const spentFix=perCat[FIXCAT]||0;
+  const spentVar=spent-spentFix;
+  const b=S.budget.total||0;
+  const useFixed=fixedPlan>0&&b>0;
+  const varBudget=useFixed?Math.max(0,b-fixedPlan):b;
+  const left=useFixed?(varBudget-spentVar):Math.max(0,b-spent);
+  return {p,spent,left,keihiSum,keihiCnt:keihi.length,perCat,totalDays,passed,daysLeft,personal,
+    fixedPlan,spentFix,spentVar,varBudget,useFixed};
 }
 function renderHome(){
   const st=stats(); const b=S.budget.total||0;
@@ -259,20 +269,27 @@ function renderHome(){
   }
   const dayPace=st.daysLeft>0?st.left/st.daysLeft:st.left;
   const pctDay=st.totalDays?Math.round(st.passed/st.totalDays*100):0;
-  const pctSpend=b?Math.round(st.spent/b*100):0;
-  const over=b&&pctSpend>pctDay;
-  const kuro=b? (st.spent<=b) : true;
-  let h='<div class="wallet"><div class="lbl">今月あと使える額</div>'
+  const useB=st.useFixed?st.varBudget:b;
+  const useSpent=st.useFixed?st.spentVar:st.spent;
+  const pctSpend=useB?Math.round(useSpent/useB*100):0;
+  const over=useB&&pctSpend>pctDay;
+  const kuro=useB?(st.left>=0):true;
+  let h='<div class="wallet"><div class="lbl">今月あと使える額'+(st.useFixed?'（固定費を除いた自由枠）':'')+'</div>'
    +'<div class="amt num rnd"><span class="yen">¥</span>'+(b?Math.round(st.left).toLocaleString('ja-JP'):'—')
    +(b?('<span class="pill '+(kuro?'g':'r')+'">'+(kuro?'黒字':'赤字')+'</span>'):'')+'</div>'
-   +'<div class="sub num">あと'+st.daysLeft+'日'+(b?(' ・ 1日 <b>'+fmt(dayPace)+'</b> で'+S.set.startDay+'日まで持つ'):' ・ 予算未設定')+'</div></div>';
+   +'<div class="sub num">あと'+st.daysLeft+'日'+(b?(' ・ 1日 <b>'+fmt(Math.max(0,dayPace))+'</b> で'+S.set.startDay+'日まで持つ'):' ・ 予算未設定')+'</div></div>';
   if(b){
-    h+='<div class="sect">ペース配分</div><div class="group pace num">'
+    h+='<div class="sect">ペース配分'+(st.useFixed?'（変動費）':'')+'</div><div class="group pace num">'
      +'<div class="row44"><span class="tag">日数</span><span class="bar"><i style="width:'+pctDay+'%"></i></span><span class="pct">'+pctDay+'%</span></div>'
      +'<div class="row44"><span class="tag">予算消化</span><span class="bar"><i class="'+(over?'over':'')+'" style="width:'+Math.min(100,pctSpend)+'%"></i></span><span class="pct" style="'+(over?'color:var(--red)':'')+'">'+pctSpend+'%</span></div></div>';
-    if(over){const runout=st.spent>0? new Date(st.p.s.getTime()+ (b/(st.spent/st.passed))*86400000):null;
-      h+='<div class="footnote warn">ややオーバーペース'+(runout&&runout<st.p.e?('。このままだと '+(runout.getMonth()+1)+'/'+runout.getDate()+' に予算切れ'):'')+'</div>';}
+    if(over){h+='<div class="footnote warn">ややオーバーペース</div>';}
     else h+='<div class="footnote ok">ペース内</div>';
+  }
+  if(st.fixedPlan>0){
+    h+='<div class="sect"></div><div class="group"><div class="row44 num" onclick="go(\'s-set\')">'
+     +'<span class="isq" style="background:rgba(94,92,230,.2);color:var(--indigo)">固</span>'
+     +'<span style="flex:1">固定費<br><span style="font-size:11px;color:var(--sec)">見込み '+fmt(st.fixedPlan)+' ・ 支払済 '+fmt(st.spentFix)+'</span></span>'
+     +'<span class="bar" style="max-width:90px"><i style="width:'+Math.min(100,st.fixedPlan?Math.round(st.spentFix/st.fixedPlan*100):0)+'%;background:var(--indigo)"></i></span><span class="chev">›</span></div></div>';
   }
   if(S.aiNote){h+='<div class="sect">AIから</div><div class="group"><div class="row44 airow"><span class="ic">✦</span><span class="txt">'+esc(S.aiNote)+'</span></div></div>';}
   h+='<div class="sect">カテゴリ残</div><div class="group">';
@@ -281,29 +298,87 @@ function renderHome(){
     h+='<div class="row44 cat num"><span class="nm">'+esc(c)+'</span><span class="bar"><i class="'+(bud&&sp>bud?'over':'')+'" style="width:'+(bud?pct:0)+'%"></i></span>'
      +'<span class="rest '+(rest!==null&&rest<0?'over':'')+'">'+(bud?fmt(rest):fmt(sp))+'</span></div>';});
   h+='</div>';
+  // 支払い予報（台帳から30日先まで）
+  const fc=upcomingFixed(30);
+  if(fc.length){
+    h+='<div class="sect">支払い予報</div><div class="group">';
+    fc.forEach(f=>{h+='<div class="row44 fc num"><span class="d" style="width:44px;font-size:13px;font-weight:600;color:var(--sec)">'+f.md+'</span>'
+      +'<span class="n" style="flex:1;font-size:14px">'+esc(f.name)+(f.keihi?' <span class="tag2 k">経費</span>':'')+'</span>'
+      +'<span style="font-size:14px;font-weight:600;'+(f.paid?'color:var(--green)':'')+'">'+(f.paid?'✓ ':'')+fmt(f.amount)+'</span></div>';});
+    h+='</div>';
+  }
   if(st.keihiCnt){h+='<div class="sect"></div><div class="group"><div class="row44 num" onclick="showKeihi()"><span class="isq" style="background:rgba(10,132,255,.16);color:var(--blue)">経</span><span style="flex:1">経費（別枠・今月）</span><span style="font-weight:600">'+fmt(st.keihiSum)+'</span><span class="chev">'+st.keihiCnt+'件 ›</span></div></div>';}
   el.innerHTML=h;
+}
+function upcomingFixed(days){
+  const out=[]; const now=new Date(); now.setHours(0,0,0,0);
+  const p=period();
+  S.fixed.forEach(f=>{
+    const day=Math.min(28,Math.max(1,+f.day||1));
+    for(let m=0;m<2;m++){
+      const d=new Date(now.getFullYear(),now.getMonth()+m,day);
+      if(d<now||((d-now)/86400000)>days)continue;
+      const paid=S.tx.some(t=>!t.skip&&inPeriod(t.date,p)&&Math.abs((+t.amount)-(+f.amount))<=Math.max(100,f.amount*0.05)&&(t.cat===FIXCAT||t.keihi===!!f.keihi));
+      out.push({md:(d.getMonth()+1)+'/'+d.getDate(),name:f.name,amount:+f.amount,keihi:!!f.keihi,paid,ts:+d});
+      break;
+    }
+  });
+  return out.sort((a,b)=>a.ts-b.ts).slice(0,8);
 }
 
 /* ---------- render: tx list ---------- */
 const SRC_IC={mail:'✉',csv:'CSV',photo:'📷',text:'⌨',manual:'✎'};
+let selMode=false, selIds=new Set();
 function renderTx(){
   const el=$('#s-tx');
-  if(!S.tx.length){el.innerHTML='<div class="empty">明細はまだない。<br>入力バー・📷レシート・設定のCSV取込から。</div>';return;}
-  const sorted=[...S.tx].sort((a,b)=> (b.date+(b.time||''))<(a.date+(a.time||''))?-1:1).slice(0,300);
-  let h='',lastD='';
+  if(!S.tx.length){el.innerHTML='<div class="empty">明細はまだない。<br>入力バー・📷レシート・設定のCSV取込から。</div>';selMode=false;return;}
+  const sorted=[...S.tx].sort((a,b)=> (b.date+(b.time||''))<(a.date+(a.time||''))?-1:1).slice(0,400);
+  let h='<div style="display:flex;justify-content:flex-end;padding:8px 4px 0">'
+    +'<button class="btn sm" id="selToggle">'+(selMode?'キャンセル':'選択')+'</button></div>';
+  let lastD='';
   sorted.forEach(t=>{
     if(t.date!==lastD){ if(lastD)h+='</div>'; lastD=t.date;
       const dd=new Date(t.date+'T12:00'); const isT=t.date===todayStr();
       h+='<div class="sect num">'+(isT?'今日 ':'')+(dd.getMonth()+1)+'/'+dd.getDate()+'</div><div class="group">';}
-    h+='<div class="row44 tr2 '+(t.keihi||t.skip?'off':'')+'" onclick="editTx(\''+t.id+'\')">'
+    const chk=selMode?('<input type="checkbox" class="selChk" data-id="'+t.id+'" '+(selIds.has(t.id)?'checked':'')+' style="width:auto;flex-shrink:0">'):'';
+    h+='<div class="row44 tr2 '+(t.keihi||t.skip?'off':'')+'" '+(selMode?'data-sel="'+t.id+'"':'onclick="editTx(\''+t.id+'\')"')+'>'
+     +chk
      +'<span class="isq" style="'+(t.src==='csv'?'font-size:9px;font-weight:700':'')+'">'+(SRC_IC[t.src]||'✎')+'</span>'
      +'<span class="shop"><span class="s1">'+esc(t.store||'（店名なし）')+'</span><span class="s2 num">'+(t.time?t.time+' ・ ':'')+esc(t.card||t.memo||'')+'</span></span>'
      +'<span class="tag2 '+(t.keihi?'k':'')+'">'+(t.skip?'対象外':(t.keihi?'経費':esc(t.cat||'その他')))+'</span>'
      +'<span class="amt num">'+fmt(t.amount)+'</span></div>';
   });
   h+='</div>';
+  if(selMode){
+    h+='<div style="position:fixed;left:0;right:0;bottom:calc(112px + env(safe-area-inset-bottom));display:flex;gap:8px;padding:10px 14px;background:linear-gradient(transparent,#000 40%);z-index:45">'
+     +'<button class="btn" id="selSkip" style="flex:1">対象外にする</button>'
+     +'<button class="btn danger" id="selDel" style="flex:1;background:var(--red-bg)">削除（<span id="selCnt">'+selIds.size+'</span>件）</button></div>'
+     +'<div style="height:64px"></div>';
+  }
   el.innerHTML=h;
+  $('#selToggle').onclick=()=>{selMode=!selMode;selIds.clear();renderTx();};
+  if(selMode){
+    document.querySelectorAll('[data-sel]').forEach(r=>r.onclick=e=>{
+      const id=r.dataset.sel; const c=r.querySelector('.selChk');
+      if(e.target!==c){c.checked=!c.checked;}
+      if(c.checked)selIds.add(id);else selIds.delete(id);
+      $('#selCnt').textContent=selIds.size;
+    });
+    $('#selSkip').onclick=()=>{
+      if(!selIds.size){toast('行を選んで');return;}
+      selIds.forEach(id=>{const i=S.tx.findIndex(x=>x.id===id);if(i>=0){S.tx[i].skip=true;S.tx[i].serverWins=false;pushTx([S.tx[i]]);}});
+      save();const n=selIds.size;selMode=false;selIds.clear();renderAll();toast(n+'件 対象外にした');
+    };
+    $('#selDel').onclick=()=>{
+      if(!selIds.size){toast('行を選んで');return;}
+      if($('#selDel').dataset.arm){
+        const ids=[...selIds];
+        S.tx=S.tx.filter(x=>!selIds.has(x.id));save();
+        ids.forEach(id=>api('del',{id}).catch(()=>{}));
+        const n=ids.length;selMode=false;selIds.clear();renderAll();toast(n+'件 削除した');
+      }else{$('#selDel').dataset.arm='1';$('#selDel').innerHTML='本当に削除（もう一度タップ）';}
+    };
+  }
 }
 function showKeihi(){go('s-tx');}
 
@@ -369,6 +444,19 @@ function renderSet(){
    +'<div class="frow"><label>月の総予算（円）</label><input id="st_total" type="number" value="'+(S.budget.total||'')+'"></div>'
    +S.cats.map((c,i)=>'<div class="frow"><label>'+esc(c)+' の予算（任意）</label><input class="st_per" data-c="'+esc(c)+'" type="number" value="'+(S.budget.per[c]||'')+'"></div>').join('')
    +'<button class="btn sm" id="st_saveB">保存</button></div>'
+   +'<div class="sect">固定費台帳（家賃・サブスク等）</div><div class="group" style="padding:12px 16px">'
+   +(S.fixed.length?S.fixed.map((f,i)=>'<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:.5px solid var(--sep)" class="num">'
+     +'<span style="width:38px;color:var(--sec);font-size:12px">'+(+f.day||1)+'日</span>'
+     +'<span style="flex:1;font-size:14px">'+esc(f.name)+(f.keihi?' <span class="tag2 k">経費</span>':'')+'</span>'
+     +'<span style="font-weight:600;font-size:14px">'+fmt(f.amount)+'</span>'
+     +'<button class="btn sm fxDel" data-i="'+i+'" style="color:var(--red);padding:4px 9px">×</button></div>').join('')
+     :'<div class="footnote" style="padding:0 0 8px">まだ登録なし。家賃・サブスク・保険などを入れると、予算から先取りされて「あと使える額」が自由に使える分だけになる。支払い予報にも出る。</div>')
+   +'<div class="frow" style="margin-top:10px"><div class="inline">'
+   +'<input id="fx_name" placeholder="名前（家賃など）" style="flex:2">'
+   +'<input id="fx_amt" type="number" placeholder="金額" style="flex:1.2">'
+   +'<input id="fx_day" type="number" min="1" max="28" placeholder="日" style="flex:.7"></div></div>'
+   +'<div style="display:flex;gap:8px;align-items:center"><label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--sec)"><input type="checkbox" id="fx_keihi" style="width:auto">経費</label>'
+   +'<button class="btn sm" id="fx_add" style="margin-left:auto">追加</button></div></div>'
    +'<div class="sect">カテゴリ</div><div class="group" style="padding:12px 16px">'
    +'<div class="frow"><label>カンマ区切りで編集（既存明細の名前はそのまま残る）</label><input id="st_cats" value="'+esc(S.cats.join(','))+'"></div>'
    +'<button class="btn sm" id="st_saveC">保存</button></div>'
@@ -386,6 +474,14 @@ function renderSet(){
     save();renderAll();toast('保存した');};
   $('#st_saveC').onclick=()=>{const cs=$('#st_cats').value.split(',').map(s=>s.trim()).filter(Boolean);
     if(cs.length){S.cats=cs;save();renderAll();toast('保存した');}};
+  $('#fx_add').onclick=()=>{
+    const name=$('#fx_name').value.trim(),amt=+$('#fx_amt').value||0,day=Math.min(28,Math.max(1,+$('#fx_day').value||1));
+    if(!name||!amt){toast('名前と金額を入れて');return;}
+    S.fixed.push({id:uid(),name,amount:amt,day,keihi:$('#fx_keihi').checked});
+    save();renderSet();toast('追加した');};
+  document.querySelectorAll('.fxDel').forEach(b=>b.onclick=()=>{
+    if(b.dataset.arm){S.fixed.splice(+b.dataset.i,1);save();renderSet();}
+    else{b.dataset.arm='1';b.textContent='確定?';}});
   $('#st_csv').onclick=()=>$('#csvFile').click();
   $('#st_exp').onclick=()=>{const a=document.createElement('a');
     a.href='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(S,null,1));
@@ -480,7 +576,10 @@ function csvPreview(){
 /* ---------- AI input / chat ---------- */
 function ctxForAI(){
   const st=stats();
-  return {period:perLbl(st.p),budgetTotal:S.budget.total,left:Math.round(st.left),daysLeft:st.daysLeft,
+  return {period:perLbl(st.p),budgetTotal:S.budget.total,
+    fixedPlan:st.fixedPlan,fixedList:S.fixed.map(f=>({name:f.name,amount:f.amount,day:f.day,keihi:!!f.keihi})),
+    varBudget:st.varBudget,spentVar:st.spentVar,spentFixed:st.spentFix,
+    left:Math.round(st.left),daysLeft:st.daysLeft,
     perCat:st.perCat,perCatBudget:S.budget.per,keihiSum:st.keihiSum,goal:S.goal,
     recent:st.personal.slice(-60).map(t=>({d:t.date,a:t.amount,s:t.store,c:t.cat}))};
 }
