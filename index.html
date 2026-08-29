@@ -154,14 +154,14 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-e';
+const APP_VER='2026-08-29-f';
 const STORE_KEY='okane_v1';
-const DEF_CATS=['食費','日用品','交通','趣味・娯楽','サブスク・固定費','その他'];
+const DEF_CATS=['食費','日用品','交通','服・美容','趣味・娯楽','サブスク・固定費','その他'];
 let S=null, curTab='s-home', chatHist=[];
 
 /* ---------- storage (versioned) ---------- */
 function defState(){return {sver:1, tx:[], cats:[...DEF_CATS],
-  budget:{total:0, per:{}}, goal:{save:0, note:''}, fixed:[],
+  budget:{total:0, per:{}}, goal:{save:0, note:''}, fixed:[], rules:{},
   set:{gasUrl:'', pass:'', startDay:25},
   aiNote:'', lastSync:0};}
 function load(){
@@ -172,6 +172,7 @@ function load(){
     if(!S.cats||!S.cats.length)S.cats=[...DEF_CATS];
     if(!S.set)S.set={gasUrl:'',pass:'',startDay:25};
     if(!S.fixed)S.fixed=[];
+    if(!S.rules)S.rules={};
   }catch(e){S=defState();}
 }
 function save(){try{localStorage.setItem(STORE_KEY,JSON.stringify(S));}catch(e){}}
@@ -399,7 +400,24 @@ window.editTx=id=>{
   let kind=t.skip?'s':(t.keihi?'k':'p');
   $('#e_kind').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;kind=b.dataset.v;[...$('#e_kind').children].forEach(x=>x.classList.toggle('on',x===b));});
   $('#e_save').onclick=()=>{
-    updateTx(id,{store:$('#e_store').value.trim(),amount:+$('#e_amt').value||0,date:$('#e_date').value,cat:$('#e_cat').value,keihi:kind==='k',skip:kind==='s'});
+    const nc=$('#e_cat').value, ns=$('#e_store').value.trim();
+    const catChanged=(nc!==t.cat);
+    updateTx(id,{store:ns,amount:+$('#e_amt').value||0,date:$('#e_date').value,cat:nc,keihi:kind==='k',skip:kind==='s'});
+    if(catChanged&&kind!=='s'){
+      learnRule(ns,nc);
+      const same=S.tx.filter(x=>x.id!==id&&!x.skip&&x.cat!==nc&&normKey(x.store)===normKey(ns));
+      save();
+      if(same.length){
+        closeSheet();
+        sheet('<h3>同じお店が'+same.length+'件ある</h3>'
+         +'<div class="footnote">「'+esc(ns)+'」を '+esc(nc)+' として覚えた。過去の'+same.length+'件も同じにする？</div>'
+         +'<div style="height:12px"></div><button class="btn pri" id="bulkYes">過去'+same.length+'件も'+esc(nc)+'にする</button>'
+         +'<div style="height:8px"></div><button class="btn" id="bulkNo">今回だけでいい</button>');
+        $('#bulkYes').onclick=()=>{same.forEach(x=>{x.cat=nc;x.serverWins=false;pushTx([x]);});save();closeSheet();renderAll();toast(same.length+'件 まとめて直した');};
+        $('#bulkNo').onclick=()=>{closeSheet();renderAll();};
+        return;
+      }
+    }
     closeSheet();toast('保存した');};
   $('#e_del').onclick=()=>{ // two-step
     if($('#e_del').dataset.arm){S.tx=S.tx.filter(x=>x.id!==id);save();api('del',{id}).catch(()=>{});closeSheet();renderAll();toast('削除した');}
@@ -462,6 +480,16 @@ function renderSet(){
    +'<button class="btn sm" id="st_saveC">保存</button></div>'
    +'<div class="sect">取込</div><div class="group" style="padding:12px 16px">'
    +'<button class="btn" id="st_csv">銀行CSVを取り込む</button></div>'
+   +'<div class="sect">分類の学習（'+Object.keys(S.rules).length+'件）</div><div class="group" style="padding:12px 16px">'
+   +'<div class="footnote" style="padding:0 0 8px">明細のカテゴリを直すと、その店を覚えて次から自動でそのカテゴリになる。</div>'
+   +(Object.keys(S.rules).length?'<div style="max-height:34vh;overflow-y:auto">'+Object.entries(S.rules).map(([k,v])=>
+      '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid var(--sep);font-size:13px">'
+      +'<span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(k)+'</span>'
+      +'<span class="tag2">'+esc(v)+'</span>'
+      +'<button class="btn sm rlDel" data-k="'+esc(k)+'" style="color:var(--red);padding:3px 8px">×</button></div>').join('')+'</div>':'')
+   +'<div style="height:10px"></div><button class="btn sm" id="st_reclass">今の明細に学習を反映</button>'
+   +(S.set.gasUrl?' <button class="btn sm" id="st_aiclass">未分類をAIで振り分け</button>':'')
+   +'</div>'
    +'<div class="sect">バックアップ</div><div class="group" style="padding:12px 16px;display:flex;gap:8px;flex-direction:column">'
    +'<button class="btn" id="st_exp">JSON書き出し</button><button class="btn" id="st_imp">JSON読み込み</button>'
    +'<button class="btn" id="st_upd">アプリを最新にする（キャッシュ削除）</button>'
@@ -483,6 +511,25 @@ function renderSet(){
   document.querySelectorAll('.fxDel').forEach(b=>b.onclick=()=>{
     if(b.dataset.arm){S.fixed.splice(+b.dataset.i,1);save();renderSet();}
     else{b.dataset.arm='1';b.textContent='確定?';}});
+  document.querySelectorAll('.rlDel').forEach(b=>b.onclick=()=>{delete S.rules[b.dataset.k];save();renderSet();});
+  $('#st_reclass').onclick=()=>{
+    let n=0;
+    S.tx.forEach(t=>{ if(t.skip)return; const c=ruleFor(t.store); if(c&&c!==t.cat){t.cat=c;t.serverWins=false;pushTx([t]);n++;} });
+    save();renderAll();toast(n?(n+'件 直した'):'変わる行はなかった');
+  };
+  const aic=$('#st_aiclass'); if(aic)aic.onclick=async()=>{
+    const targets=S.tx.filter(t=>!t.skip&&(t.cat==='その他'||!t.cat));
+    if(!targets.length){toast('未分類はない');return;}
+    aic.textContent='振り分け中…';
+    try{
+      const j=await api('ai',{mode:'classify',cats:S.cats,rules:S.rules,
+        items:targets.slice(0,120).map((t,i)=>({i,store:t.store,amount:t.amount}))});
+      let n=0;
+      (j.items||[]).forEach(r=>{const t=targets[r.i]; if(!t||!r.cat||!S.cats.includes(r.cat))return;
+        if(r.cat!==t.cat){t.cat=r.cat;t.serverWins=false;pushTx([t]);learnRule(t.store,r.cat);n++;}});
+      save();renderSet();renderAll();toast(n+'件 振り分けた');
+    }catch(e){toast('AIエラー: '+e.message);aic.textContent='未分類をAIで振り分け';}
+  };
   $('#st_csv').onclick=()=>$('#csvFile').click();
   $('#st_exp').onclick=()=>{const a=document.createElement('a');
     a.href='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(S,null,1));
@@ -583,7 +630,7 @@ $('#csvFile').addEventListener('change',async e=>{
       if(amt>1000000||isDateCell(r[o])){bad++;}     // 明らかな誤マッピング
       const rule=bankRule(store);
       const dup=S.tx.some(x=>x.date===dt&&+x.amount===amt&&!x.skip);
-      items.push({date:dt,amount:amt,store,cat:rule.cat||'その他',
+      items.push({date:dt,amount:amt,store,cat:(rule.skip?'その他':(ruleFor(store)||rule.cat||'その他')),
         on:!(rule.skip||dup||amt>1000000), why:dup?'既存と同日同額(重複?)':(amt>1000000?'金額が異常。列が違うかも':(rule.why||''))});
     });
     if(!items.length){toast('取り込める行がない');return;}
@@ -608,14 +655,15 @@ function csvPreview(){
   h+='</div><div style="height:10px"></div><button class="btn pri" id="cvGo">チェックした行を取り込む</button>';
   sheet(h);
   document.querySelectorAll('.cvOn').forEach(c=>c.onchange=()=>{items[+c.dataset.i].on=c.checked;});
-  document.querySelectorAll('.cvCat').forEach(s=>s.onchange=()=>{items[+s.dataset.i].cat=s.value;});
+  document.querySelectorAll('.cvCat').forEach(s=>s.onchange=()=>{const it=items[+s.dataset.i];it.cat=s.value;learnRule(it.store,s.value);save();});
   const ai=$('#cvAI'); if(ai)ai.onclick=async()=>{
     ai.textContent='分類中…';
     try{
-      const j=await api('ai',{mode:'classify',cats:S.cats,items:items.map((it,i)=>({i,store:it.store,amount:it.amount}))});
+      const j=await api('ai',{mode:'classify',cats:S.cats,rules:S.rules,items:items.map((it,i)=>({i,store:it.store,amount:it.amount}))});
       (j.items||[]).forEach(r=>{const it=items[r.i]; if(!it)return;
         if(r.skip){it.on=false;it.why=r.why||'AI判定:対象外';}
-        if(r.cat&&S.cats.includes(r.cat))it.cat=r.cat;});
+        if(r.cat&&S.cats.includes(r.cat)){it.cat=r.cat;learnRule(it.store,r.cat);}});
+      save();
       csvPreview();
     }catch(err){toast('AI分類エラー: '+err.message);ai.textContent='AIで分類し直す';}
   };
@@ -644,7 +692,7 @@ async function handleInput(text){
   // ローカル入力パターン: 店名 金額
   const m=text.trim().match(/^(.+?)[\s　]+([0-9,]+)\s*円?$/);
   if(m&&!isQ){
-    const t={date:todayStr(),amount:parseInt(m[2].replace(/,/g,''),10),store:m[1],cat:guessCat(m[1]),keihi:false,src:'text'};
+    const t={date:todayStr(),amount:parseInt(m[2].replace(/,/g,''),10),store:m[1],cat:catFor(m[1]),keihi:false,src:'text'};
     if(addTx(t)){renderAll();toast(fmt(t.amount)+' 記録した（'+t.cat+'）');}
     return;
   }
@@ -661,12 +709,36 @@ async function handleInput(text){
     if(j.tx&&j.tx.length){j.tx.forEach(t=>{t.src='text';t.date=t.date||todayStr();addTx(t,{silent:true});});renderAll();toast(j.tx.length+'件 記録した');}
   }catch(e){$('#chatLog').lastChild.remove();pushBub('ai2','エラー: '+e.message);}
 }
+/* ---------- 分類（学習ルール優先 → 内蔵辞書） ---------- */
+function normKey(store){
+  return (store||'').normalize('NFKC').toLowerCase()
+    .replace(/[\s　]/g,'')
+    .replace(/[（）()＊*・,，.。\-－ー_＋+#＃'"’”\/]/g,'')
+    .replace(/[0-9]/g,'')
+    .replace(/(店|支店|本店|営業所|利用国[a-z]*|決済|株式会社|㈱)$/,'')
+    .slice(0,16);
+}
+function learnRule(store,cat){
+  const k=normKey(store); if(!k||k.length<2||!cat)return;
+  S.rules[k]=cat;
+}
+function ruleFor(store){
+  const k=normKey(store); if(!k)return null;
+  if(S.rules[k])return S.rules[k];
+  // 部分一致（登録キーが店名に含まれる／その逆）— 長いキーを優先
+  const keys=Object.keys(S.rules).sort((a,b)=>b.length-a.length);
+  for(const rk of keys){ if(rk.length>=3&&(k.includes(rk)||rk.includes(k)))return S.rules[rk]; }
+  return null;
+}
+function catFor(store){ return ruleFor(store)||guessCat(store); }
 function guessCat(store){
   const s=(store||'').normalize('NFKC');
-  if(/セブン|ｾﾌﾞﾝ|ファミリーマート|ﾌｱﾐﾘ|ローソン|ﾛ-ｿﾝ|ミニストップ|コンビニ|イオン|ｲｵﾝ|マルエツ|オーケー|ライフ|西友|スーパー|まいばすけっと|ジャパンビバレッジ|ｼﾞﾔﾊﾟﾝ|自販機|ラーメン|寿司|鮨|居酒屋|食堂|キッチン|レストラン|カフェ|CAFE|スターバックス|ドトール|マクドナルド|吉野家|すき家|松屋|ブロンコビリー|焼肉|定食|弁当|パン|ベーカリー|酒|ビール|まぐろ|廻鮮/i.test(s))return '食費';
-  if(/薬|ドラッグ|マツモトキヨシ|ウエルシア|サンドラッグ|ダイソー|セリア|100円|ニトリ|無印|ホームセンター|カインズ|クリーニング|ランドリー|理容|美容|ヘアー|AF浦安/i.test(s))return '日用品';
+  if(/セブン|ｾﾌﾞﾝ|ファミリーマート|ﾌｱﾐﾘ|ローソン|ﾛ-ｿﾝ|ミニストップ|コンビニ|イオン|ｲｵﾝ|マルエツ|オーケー|ライフ|西友|スーパー|まいばすけっと|ジャパンビバレッジ|ｼﾞﾔﾊﾟﾝ|自販機|ラーメン|寿司|鮨|居酒屋|食堂|キッチン|レストラン|カフェ|CAFE|スターバックス|ドトール|マクドナルド|吉野家|すき家|松屋|ブロンコビリー|焼肉|定食|弁当|パン|ベーカリー|酒|ビール|まぐろ|廻鮮|泰興|mellow　浦安/i.test(s))return '食費';
+  if(/薬|ドラッグ|マツモトキヨシ|ウエルシア|サンドラッグ|ダイソー|セリア|100円|ニトリ|無印|ホームセンター|カインズ|クリーニング|ランドリー/i.test(s))return '日用品';
   if(/JR|ＪＲ|メトロ|東京地下鉄|京急|京成|東急|小田急|西武|東武|タクシー|GO（|GOアプリ|Uber|ウーバー|Suica|ｽｲｶ|PASMO|パスモ|バス|新幹線|駐車|パーキング|ETC|高速|航空|ANA|JAL/i.test(s))return '交通';
-  if(/AMAZON|楽天市場|メルカリ|ZOZO|ユニクロ|GU|古着|mellow|イクスピアリ|映画|シネマ|TOHO|ゲーム|PLAYSTATION|PS5|Nintendo|STEAM|書店|ブックオフ|漫画|ヤンジャン|музы|音楽|楽器|サウンドハウス|島村|SOUNDFLOW|SUNO|プラグイン|Plugin|Waves|Native Instruments|ライブ|チケット|スタジオ/i.test(s))return '趣味・娯楽';
+  if(/理容|美容|ヘアー|ヘア|サロン|barber|salon|AF浦安|古着|ユニクロ|UNIQLO|GU|ZOZO|しまむら|BEAMS|SHIPS|アパレル|洋服|靴|スニーカー|mellow|イクスピアリ/i.test(s)){
+    return S.cats.includes('服・美容')?'服・美容':'日用品';}
+  if(/AMAZON|楽天市場|メルカリ|映画|シネマ|TOHO|ゲーム|PLAYSTATION|PS5|Nintendo|STEAM|書店|ブックオフ|漫画|ヤンジャン|音楽|楽器|サウンドハウス|島村|SOUNDFLOW|SUNO|プラグイン|Plugin|Waves|Native Instruments|ライブ|チケット|スタジオ/i.test(s))return '趣味・娯楽';
   if(/NETFLIX|SPOTIFY|U-NEXT|Hulu|Disney|APPLE|Google|ADOBE|ANTHROPIC|OpenAI|ChatGPT|Dropbox|iCloud|UQ|ドコモ|ソフトバンク|au|ahamo|povo|楽天モバイル|電力|東京電力|ガス|水道|NHK|保険|家賃|管理費|ペイペイ|PayPal|月額|会費|年会費/i.test(s))return FIXCAT;
   return 'その他';
 }
