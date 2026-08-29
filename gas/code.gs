@@ -16,11 +16,12 @@ var MODEL_CHAT = 'claude-sonnet-4-6';
 var MODEL_LIGHT = 'claude-haiku-4-5-20251001';
 var SHEET_NAME = 'tx';
 var HEAD = ['id','date','time','amount','store','cat','keihi','src','card','memo','createdAt','updatedAt','skip'];
-var MAIL_QUERY = 'newer_than:3d -label:OKANE_DONE ('
+var MAIL_QUERY_BASE = '(' 
   + 'from:rakuten-card.co.jp OR from:rakuten.co.jp OR from:vpass.ne.jp OR from:smbc-card.com OR from:smbc.co.jp'
   + ' OR subject:(カード利用のお知らせ) OR subject:(ご利用のお知らせ) OR subject:(ご利用内容確認) OR subject:(利用速報)'
   + ' OR subject:(デビット) OR subject:(ご利用明細) OR (from:amazon.co.jp subject:ご注文)'
   + ')';
+function mailQuery_(days){ return 'newer_than:' + (days||3) + 'd ' + MAIL_QUERY_BASE; }
 var DEFAULT_CATS = ['食費','日用品','交通','服・美容','趣味・娯楽','サブスク・固定費','その他'];
 
 /* ---------- entry ---------- */
@@ -37,7 +38,7 @@ function doPost(e){
       case 'del':    out = del_(p); break;
       case 'ai':     out = ai_(p); break;
       case 'diag':   out = diag_(p); break;
-      case 'scan':   out = {found: scanMail()}; break;
+      case 'scan':   out = {found: scanMail(p.days||3)}; break;
       default: throw new Error('unknown action');
     }
   }catch(err){ out = {error: String(err && err.message || err)}; }
@@ -204,7 +205,7 @@ function diag_(p){
     {q:'newer_than:30d subject:(カード利用のお知らせ)', label:'件名:カード利用のお知らせ'},
     {q:'newer_than:30d subject:(ご利用のお知らせ)', label:'件名:ご利用のお知らせ'},
     {q:'newer_than:30d subject:(速報)', label:'件名:速報'},
-    {q:MAIL_QUERY, label:'現在の取込条件'}
+    {q:mailQuery_(30), label:'現在の取込条件(30日)'}
   ];
   qs.forEach(function(x){
     var th=[]; try{ th=GmailApp.search(x.q,0,5); }catch(e){}
@@ -223,11 +224,11 @@ function diag_(p){
 }
 
 /* ---------- Gmail scan (15分トリガー) ---------- */
-function scanMail(){
-  var label = GmailApp.getUserLabelByName('OKANE_DONE') || GmailApp.createLabel('OKANE_DONE');
-  var threads = GmailApp.search(MAIL_QUERY, 0, 20);
+function scanMail(days){
+  var q = mailQuery_(days||3);
+  var threads = GmailApp.search(q, 0, days>7?60:25);
   var n = 0;
-  if(!threads.length){ Logger.log('scanMail: 該当メール0件 / query=' + MAIL_QUERY); return 0; }
+  if(!threads.length){ Logger.log('scanMail: 該当メール0件 / query=' + q); return 0; }
   var sh = sheet_();
   var existing = {}; rows_().forEach(function(t){ existing[t.id]=true; });
   threads.forEach(function(th){
@@ -246,9 +247,8 @@ function scanMail(){
         });
       }catch(e){ /* skip broken mail */ }
     });
-    th.addLabel(label);
   });
-  Logger.log('scanMail: ' + threads.length + 'スレッド処理 / ' + n + '件登録');
+  Logger.log('scanMail: ' + threads.length + 'スレッド処理 / ' + n + '件登録 / query=' + q);
   return n;
 }
 function parseMail_(msg){
@@ -280,10 +280,11 @@ function parseMail_(msg){
   return [];
 }
 function cardLabel_(from, body){
-  if(/vpass|smbc/i.test(from)) return '三井住友';
-  if(/rakuten-card/i.test(from)) return '楽天';
-  if(/amazon/i.test(from)) return 'Amazon';
-  return '';
+  var s = (from||'') + ' ' + (body||'').slice(0,600);
+  if(/vpass|smbc|三井住友/i.test(s)) return '三井住友';
+  if(/rakuten|楽天/i.test(s)) return '楽天カード';
+  if(/amazon|アマゾン/i.test(s)) return 'Amazon';
+  return 'メール';
 }
 function autoCat_(store){
   if(/セブン|ファミ|ローソン|スーパー|マルエツ|オーケー|食|弁当|カフェ|レストラン/i.test(store)) return '食費';
