@@ -158,7 +158,7 @@ nav button.on{color:var(--green)}
 
 <script>
 /* ================== お金 v1 ================== */
-const APP_VER='2026-08-29-k';
+const APP_VER='2026-08-30-a';
 const STORE_KEY='okane_v1';
 const DEF_CATS=['食費','日用品','交通','服・美容','趣味・娯楽','サブスク・固定費','その他'];
 let S=null, curTab='s-home', chatHist=[], perOff=0, cardFilter='', catFilter='', keihiFilter=false;
@@ -237,6 +237,26 @@ async function syncPull(silent){
   }catch(e){ if(e.message!=='NO_GAS'&&!silent)toast('同期エラー'); $('#syncInfo').textContent=S.set.gasUrl?'同期エラー':'ローカルのみ'; }
 }
 async function pushTx(list){ try{ await api('add',{tx:list}); }catch(e){} }
+
+/* サーバーのカード名を強制的に反映（自分で直した明細も対象）。壊れた高額行の掃除も兼ねる */
+async function forceCardSync(silent){
+  try{
+    const j=await api('pull',{since:0});
+    let n=0;
+    (j.tx||[]).forEach(t=>{
+      const i=S.tx.findIndex(x=>x.id===t.id);
+      if(i>=0){
+        if(t.card&&S.tx[i].card!==t.card){S.tx[i].card=t.card;n++;}
+        if(t.keihi===true&&S.tx[i].keihi!==true)S.tx[i].keihi=true;
+      } else { S.tx.push(t); n++; }
+    });
+    const ids=new Set((j.tx||[]).map(t=>t.id));
+    const bad=S.tx.filter(t=>!ids.has(t.id)&&(+t.amount>=1000000));
+    if(bad.length){S.tx=S.tx.filter(t=>bad.indexOf(t)<0);n+=bad.length;}
+    S.lastSync=j.now||Date.now(); save(); renderAll();
+    if(!silent)toast(n?n+'件 直した':'変更なし');
+  }catch(e){ if(!silent)toast('エラー: '+(e.message||e)); }
+}
 
 /* ---------- tx ops ---------- */
 function addTx(t,opts){
@@ -622,6 +642,7 @@ function renderSet(){
    +'<div class="sect">バックアップ</div><div class="group" style="padding:12px 16px;display:flex;gap:8px;flex-direction:column">'
    +'<button class="btn" id="st_exp">JSON書き出し</button><button class="btn" id="st_imp">JSON読み込み</button>'
    +'<button class="btn" id="st_upd">アプリを最新にする（キャッシュ削除）</button>'
+   +'<button class="btn" id="st_cardsync">カード名をサーバーに合わせる</button>'
    +'<button class="btn danger" id="st_wipe">全データ削除</button></div>'
    +'<div class="footnote num" style="padding-top:14px">お金 '+APP_VER+'</div>';
   $('#st_test').onclick=async()=>{S.set.gasUrl=$('#st_gas').value.trim();S.set.pass=$('#st_pass').value.trim();save();
@@ -711,6 +732,7 @@ function renderSet(){
     }catch(e){}
     location.replace(location.pathname+'?u='+Date.now());
   };
+  $('#st_cardsync').onclick=()=>forceCardSync();
   $('#st_wipe').onclick=()=>{
     if($('#st_wipe').dataset.arm){localStorage.removeItem(STORE_KEY);location.reload();}
     else{$('#st_wipe').dataset.arm='1';$('#st_wipe').textContent='本当に全部消す（もう一度タップ）';}};
@@ -745,9 +767,9 @@ function guessCardName(rows,det,fname){
   const head=(det.head||[]).join(',');
   const sample=(det.data&&det.data[0]?det.data[0].join(','):'');
   if(/enavi|rakuten/.test(f))return '楽天カード';
-  if(/vpass|smbc|meisai/.test(f))return '三井住友';
+  if(/vpass|smbc|meisai/.test(f))return '三井住友VISAカード';
   if(/利用店名|利用日/.test(head))return '楽天カード';
-  if(det.noHead)return '三井住友';
+  if(det.noHead)return '三井住友VISAカード';
   if(/摘要|預かり金額|差引残高|支払い金額/.test(head))return '銀行';
   return '';
 }
@@ -821,7 +843,7 @@ $('#csvFile').addEventListener('change',async e=>{
 });
 function csvPreview(){
   const items=_csvItems;
-  const cardNames=[...new Set(S.tx.map(t=>t.card).filter(Boolean))];
+  const cardNames=[...new Set(['楽天カード','楽天カード（経費）','三井住友VISAカード'].concat(S.tx.map(t=>t.card).filter(Boolean)))];
   let h='<h3>CSV取込 2/2 — 中身の確認（'+items.length+'行）</h3>'
    +'<div class="frow"><label>このCSVは何のカード／口座？'+(_csvCard?'（ファイルから自動判定）':'')+'</label>'
    +'<input id="cvCard" list="cvCardList" placeholder="例: 楽天(私用) / 楽天(仕事) / 三井住友 / 銀行" value="'+esc(_csvCard)+'">'
@@ -1048,6 +1070,7 @@ $('#perNext').onclick=()=>{if(perOff<0){perOff++;renderAll();}};
 /* ---------- boot ---------- */
 load(); go('s-home'); renderAll();
 if(S.set.gasUrl)syncPull(true);
+if(S.set.gasUrl&&!S.migCard1){S.migCard1=1;save();setTimeout(()=>forceCardSync(true),1500);}
 setInterval(()=>{if(S.set.gasUrl&&document.visibilityState==='visible')syncPull(true);},60000);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
