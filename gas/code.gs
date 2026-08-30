@@ -281,7 +281,7 @@ function parseMail_(msg){
 }
 function cardLabel_(from, body){
   var s = (from||'') + ' ' + (body||'').slice(0,600);
-  if(/vpass|smbc|三井住友/i.test(s)) return '三井住友';
+  if(/vpass|smbc|三井住友/i.test(s)) return '三井住友VISAカード';
   if(/rakuten|楽天/i.test(s)) return '楽天カード';
   if(/amazon|アマゾン/i.test(s)) return 'Amazon';
   return 'メール';
